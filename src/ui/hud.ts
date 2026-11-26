@@ -492,7 +492,7 @@ export class DroneHUD {
         </div>
       </div>
 
-      <!-- SCENE SELECTION POP-UP MODAL (from main menu "Scenes" or the top-bar scene chip) -->
+      <!-- SCENE SELECTION POP-UP MODAL (from main menu "Sahneler" or the top-bar scene chip) -->
       <div class="scene-modal-overlay hud-interactive hidden" id="scene-modal-overlay">
         <div class="scene-modal-card">
           <div class="scene-modal-header">

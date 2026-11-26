@@ -201,7 +201,7 @@ function bootstrap(): void {
     },
   });
 
-  // 5. Startup Main Menu (Start Simulation / Scenes / Options)
+  // 5. Startup Main Menu (Simülasyonu Başlat / Sahneler / Seçenekler)
   menu = new MainMenu(appRoot, {
     onStart: startSimulation,
     onOpenScenes: () => {

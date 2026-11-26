@@ -154,7 +154,7 @@ export class MainMenu {
           <button type="button" class="mm-item primary" data-action="start">
             <span class="mm-idx">01</span>
             <span class="mm-text">
-              <span class="mm-label" lang="en">Start Simulation</span>
+              <span class="mm-label">Simülasyonu Başlat</span>
               <small>Sahne: <b id="mm-scene-label">${SCENE_LABELS.mountain}</b></small>
             </span>
             <span class="mm-arrow">▸</span>
@@ -162,7 +162,7 @@ export class MainMenu {
           <button type="button" class="mm-item" data-action="scenes">
             <span class="mm-idx">02</span>
             <span class="mm-text">
-              <span class="mm-label" lang="en">Scenes</span>
+              <span class="mm-label">Sahneler</span>
               <small>Uçuş yapılacak ortamı seç</small>
             </span>
             <span class="mm-arrow">▸</span>
@@ -170,7 +170,7 @@ export class MainMenu {
           <button type="button" class="mm-item" data-action="options">
             <span class="mm-idx">03</span>
             <span class="mm-text">
-              <span class="mm-label" lang="en">Options</span>
+              <span class="mm-label">Seçenekler</span>
               <small>Hava durumu, uçuş modu, kamera ve ses</small>
             </span>
             <span class="mm-arrow">▸</span>
