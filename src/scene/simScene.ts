@@ -272,6 +272,11 @@ export class SimScene {
   ): void {
     this.world.dispose();
     this.world = buildWorld(this.scene, sceneId, obstacles, checkpoints, this.maxAnisotropy);
+    this.resetCamera();
+  }
+
+  /** Snap the chase camera back behind the home pad (after a reset) instead of swooping there. */
+  public resetCamera(): void {
     this.chasePos.set(0, 2.2, 4.5);
     this.chaseLook.set(0, 0.6, 0);
   }

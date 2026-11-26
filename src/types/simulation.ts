@@ -6,6 +6,9 @@ export type WeatherPreset = 'clear' | 'windy' | 'rainy' | 'foggy' | 'stormy' | '
 
 export type CameraMode = 'chase' | 'gimbal' | 'los' | 'orbit';
 
+/** Why the flight ended in a crash (null while the drone is intact). */
+export type CrashReason = 'obstacle' | 'water';
+
 export type FlightPhase =
   | 'GROUNDED'
   | 'ARMING'
@@ -131,6 +134,10 @@ export interface DroneState {
   flightTimeSec: number;
   isRecording: boolean;
   recordingSec: number;
+  /** Set when the drone hits an obstacle or falls into water; the flight is over until reset. */
+  crashReason: CrashReason | null;
+  /** Seconds elapsed since the crash (drives the fall/sink animation and popup delay). */
+  crashTimeSec: number;
 }
 
 export interface WorldObstacle {

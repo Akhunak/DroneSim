@@ -1,5 +1,6 @@
 import {
   CheckpointRing,
+  CrashReason,
   DroneState,
   DroneWarning,
   FlightMode,
@@ -23,6 +24,9 @@ const BASE_HOVER_RPM = 6400;
 const MAX_MOTOR_RPM = 13800;
 const IDLE_MOTOR_RPM = 2300;
 const BATTERY_CAPACITY_WH = 18.96; // 2590mAh @ 7.32V
+const SUNK_DEPTH = 0.6; // how far below the surface a drowned drone settles (m)
+
+export type PhysicsEvent = 'takeoff' | 'land' | 'mode' | 'checkpoint' | 'rth' | 'warning' | 'crash';
 
 function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
@@ -46,13 +50,15 @@ export class DronePhysicsEngine {
   private weather: WeatherEngine;
   private phaseTimer = 0;
   private cscHoldTimer = 0;
-  private onEvent?: (event: 'takeoff' | 'land' | 'mode' | 'checkpoint' | 'rth' | 'warning') => void;
+  /** Tumble rates (rad/s) applied to pitch/roll while the crashed drone falls. */
+  private crashSpin = { pitch: 0, roll: 0 };
+  private onEvent?: (event: PhysicsEvent) => void;
 
   constructor(
     weather: WeatherEngine,
     obstacles: WorldObstacle[],
     checkpoints: CheckpointRing[],
-    onEvent?: (event: 'takeoff' | 'land' | 'mode' | 'checkpoint' | 'rth' | 'warning') => void
+    onEvent?: (event: PhysicsEvent) => void
   ) {
     this.weather = weather;
     this.obstacles = obstacles;
@@ -111,7 +117,109 @@ export class DronePhysicsEngine {
       flightTimeSec: 0,
       isRecording: false,
       recordingSec: 0,
+      crashReason: null,
+      crashTimeSec: 0,
     };
+  }
+
+  public get isCrashed(): boolean {
+    return this.state.crashReason !== null;
+  }
+
+  /**
+   * Ends the flight: motors cut out and the drone becomes a passive falling body.
+   * Only the first impact counts; later contacts while tumbling are ignored.
+   */
+  private triggerCrash(reason: CrashReason): void {
+    const s = this.state;
+    if (s.crashReason) return;
+    s.crashReason = reason;
+    s.crashTimeSec = 0;
+    s.motorsArmed = false;
+    s.isRecording = false;
+    // Impact energy sets how violently the airframe tumbles
+    const impact = Math.min(1, Math.hypot(s.velocity.x, s.velocity.y, s.velocity.z) / 8);
+    const spin = reason === 'water' ? 1.5 : 3 + impact * 9;
+    this.crashSpin.pitch = (Math.random() - 0.5) * 2 * spin;
+    this.crashSpin.roll = (Math.random() - 0.5) * 2 * spin;
+    this.onEvent?.('crash');
+  }
+
+  /** Unpowered fall after a crash: gravity, tumbling, bounce on ground, sinking in water. */
+  private stepCrashed(dt: number): void {
+    const s = this.state;
+    s.crashTimeSec += dt;
+    s.motorThrottle = [0, 0, 0, 0];
+    s.motorRPM = s.motorRPM.map((rpm) => Math.max(0, rpm - dt * 9000)) as [
+      number,
+      number,
+      number,
+      number,
+    ];
+
+    const terrainH = getTerrainHeight(s.position.x, s.position.z);
+    const supportY = this.getSupportSurfaceY(s.position.x, s.position.z, s.position.y);
+    const overWater = terrainH < WATER_LEVEL && supportY < WATER_LEVEL + 2.0;
+    const restY = overWater
+      ? Math.max(terrainH + DRONE_GEAR_HEIGHT, WATER_LEVEL - SUNK_DEPTH)
+      : supportY + DRONE_GEAR_HEIGHT;
+    const submerged = overWater && s.position.y <= WATER_LEVEL;
+
+    if (submerged) {
+      // Water drag: kill momentum quickly and sink slowly
+      const drag = Math.exp(-4 * dt);
+      s.velocity.x *= drag;
+      s.velocity.z *= drag;
+      s.velocity.y = lerp(s.velocity.y, -0.4, dt * 4);
+    } else {
+      const drag = Math.exp(-0.35 * dt);
+      s.velocity.x *= drag;
+      s.velocity.z *= drag;
+      s.velocity.y -= GRAVITY * dt;
+    }
+
+    s.position.x += s.velocity.x * dt;
+    s.position.y += s.velocity.y * dt;
+    s.position.z += s.velocity.z * dt;
+
+    let resting = false;
+    if (s.position.y <= restY) {
+      s.position.y = restY;
+      if (!overWater && s.velocity.y < -2.0) {
+        s.velocity.y = -s.velocity.y * 0.25; // small bounce off the ground
+        s.velocity.x *= 0.5;
+        s.velocity.z *= 0.5;
+        this.crashSpin.pitch *= 0.5;
+        this.crashSpin.roll *= 0.5;
+      } else {
+        s.velocity.y = 0;
+        resting = true;
+        const friction = Math.exp(-8 * dt);
+        s.velocity.x *= friction;
+        s.velocity.z *= friction;
+      }
+    }
+
+    // Tumble in the air, settle once resting (water damps rotation too)
+    if (resting || submerged) {
+      const damp = Math.exp(-6 * dt);
+      this.crashSpin.pitch *= damp;
+      this.crashSpin.roll *= damp;
+    }
+    s.pitch += this.crashSpin.pitch * dt;
+    s.roll += this.crashSpin.roll * dt;
+
+    this.resolveObstacleCollisions();
+
+    const floorY = supportY + DRONE_GEAR_HEIGHT;
+    s.altitudeAGL = Math.max(0, s.position.y - floorY);
+    s.altitudeHome = s.position.y - s.homePosition.y;
+    s.horizontalSpeed = Math.hypot(s.velocity.x, s.velocity.z);
+    s.verticalSpeed = s.velocity.y;
+    s.distanceFromHome = Math.hypot(
+      s.position.x - s.homePosition.x,
+      s.position.z - s.homePosition.z
+    );
   }
 
   public setFlightMode(mode: FlightMode): void {
@@ -121,7 +229,7 @@ export class DronePhysicsEngine {
   }
 
   public requestTakeoff(): void {
-    if (this.state.batteryPercent <= 2) return;
+    if (this.isCrashed || this.state.batteryPercent <= 2) return;
     if (this.state.flightPhase === 'GROUNDED' || this.state.flightPhase === 'ARMING') {
       this.state.motorsArmed = true;
       this.state.flightPhase = 'TAKING_OFF';
@@ -132,6 +240,7 @@ export class DronePhysicsEngine {
   }
 
   public requestLand(): void {
+    if (this.isCrashed) return;
     if (
       this.state.flightPhase === 'FLYING' ||
       this.state.flightPhase === 'TAKING_OFF' ||
@@ -144,6 +253,7 @@ export class DronePhysicsEngine {
   }
 
   public toggleTakeoffLand(): void {
+    if (this.isCrashed) return;
     if (this.state.flightPhase === 'GROUNDED') {
       this.requestTakeoff();
     } else if (this.state.flightPhase === 'LANDING') {
@@ -154,6 +264,7 @@ export class DronePhysicsEngine {
   }
 
   public toggleRTH(): void {
+    if (this.isCrashed) return;
     if (this.state.flightPhase.startsWith('RTH_')) {
       this.state.flightPhase = 'FLYING';
       return;
@@ -230,6 +341,12 @@ export class DronePhysicsEngine {
     const clampedDt = Math.min(dt, 0.05);
     const s = this.state;
     const modeCfg = FLIGHT_MODES[s.flightMode];
+
+    // A crashed drone ignores all input until it is reset
+    if (s.crashReason) {
+      this.stepCrashed(clampedDt);
+      return;
+    }
 
     // Recording timer
     if (s.isRecording) {
@@ -674,12 +791,12 @@ export class DronePhysicsEngine {
     const newFloorY = this.getSupportSurfaceY(s.position.x, s.position.z, s.position.y) + DRONE_GEAR_HEIGHT;
     if (s.position.y <= newFloorY) {
       s.position.y = newFloorY;
-      // Prevent sinking into water — keep hovering slightly above water if over lake/canal
+      // Touching the lake / canal surface downs the drone
       const terrainH = getTerrainHeight(s.position.x, s.position.z);
       const onRooftop = newFloorY > WATER_LEVEL + 2.0;
       if (!onRooftop && terrainH < WATER_LEVEL) {
-        s.position.y = WATER_LEVEL + 0.35;
-        s.velocity.y = Math.max(0.2, s.velocity.y);
+        this.triggerCrash('water');
+        return;
       } else {
         if (s.velocity.y < -1.8) {
           // Firm bounce damped
@@ -700,11 +817,9 @@ export class DronePhysicsEngine {
     const terrainH = getTerrainHeight(s.position.x, s.position.z);
     const onRooftop = floorY > WATER_LEVEL + 2.0;
     if (!onRooftop && terrainH < WATER_LEVEL) {
-      // Safety: do not land on water! Switch back to hover
-      s.flightPhase = 'FLYING';
-      s.position.y = WATER_LEVEL + 0.8;
-      s.velocity.y = 0.5;
-      return false;
+      // Landing (manual, auto or low-battery) onto water: the drone goes in
+      this.triggerCrash('water');
+      return true;
     }
     s.position.y = floorY;
     s.velocity = { x: 0, y: 0, z: 0 };
@@ -737,6 +852,7 @@ export class DronePhysicsEngine {
             s.velocity.x -= 1.4 * dot * nx;
             s.velocity.z -= 1.4 * dot * nz;
           }
+          this.triggerCrash('obstacle');
         }
       } else {
         const halfW = obs.width * 0.5 + DRONE_RADIUS;
@@ -753,6 +869,7 @@ export class DronePhysicsEngine {
             s.position.z += dz >= 0 ? overlapZ : -overlapZ;
             s.velocity.z *= -0.35;
           }
+          this.triggerCrash('obstacle');
         }
       }
     }

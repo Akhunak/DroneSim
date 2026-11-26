@@ -35,6 +35,7 @@ function bootstrap(): void {
     else if (evt === 'mode') audio.playTone('mode');
     else if (evt === 'checkpoint') audio.playTone('checkpoint');
     else if (evt === 'rth') audio.playTone('rth');
+    else if (evt === 'crash') audio.playTone(physics.state.crashReason === 'water' ? 'splash' : 'crash');
   });
 
   // 2. 3D Scene & Renderer
@@ -90,22 +91,22 @@ function bootstrap(): void {
   // 3. RC Input Manager (Keyboard + Virtual Sticks + Physical USB Gamepad)
   const rcInput = new RCInputManager({
     onModeSelect: (mode) => {
-      if (!hud.isSceneModalOpen) setMode(mode);
+      if (!hud.isModalOpen) setMode(mode);
     },
     onTakeoffLand: () => {
-      if (!hud.isSceneModalOpen) physics.toggleTakeoffLand();
+      if (!hud.isModalOpen) physics.toggleTakeoffLand();
     },
     onRTH: () => {
-      if (!hud.isSceneModalOpen) physics.toggleRTH();
+      if (!hud.isModalOpen) physics.toggleRTH();
     },
     onCycleCamera: () => {
-      if (!hud.isSceneModalOpen) cycleCamera();
+      if (!hud.isModalOpen) cycleCamera();
     },
     onPhoto: () => {
-      if (!hud.isSceneModalOpen) capturePhoto();
+      if (!hud.isModalOpen) capturePhoto();
     },
     onToggleRecord: () => {
-      if (hud.isSceneModalOpen) return;
+      if (hud.isModalOpen) return;
       audio.unlock();
       audio.playTone('mode');
       physics.toggleRecording();
@@ -162,6 +163,12 @@ function bootstrap(): void {
     },
     onLeftStick: (x, y) => rcInput.setVirtualLeftStick(x, y),
     onRightStick: (x, y) => rcInput.setVirtualRightStick(x, y),
+    onCrashAcknowledged: () => {
+      audio.unlock();
+      physics.resetToHome();
+      simScene.resetCamera();
+      hud.syncModeUI(physics.state.flightMode);
+    },
   });
 
   // Sync initial UI state
@@ -191,7 +198,7 @@ function bootstrap(): void {
     elapsed += dt;
 
     // Sample inputs (lock sticks to neutral while Scene Selection Pop-up is open)
-    const rc = hud.isSceneModalOpen ? neutralInput : rcInput.sample(dt);
+    const rc = hud.isModalOpen ? neutralInput : rcInput.sample(dt);
 
     // Step weather & 6-DOF drone physics
     weather.update(dt);

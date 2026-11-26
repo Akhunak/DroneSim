@@ -157,9 +157,16 @@ export class DroneAudioEngine {
     this.rainGain.gain.setTargetAtTime(weather.rainIntensity * 0.14, now, 0.15);
   }
 
-  public playTone(type: 'takeoff' | 'land' | 'mode' | 'checkpoint' | 'rth' | 'shutter' | 'thunder'): void {
+  public playTone(
+    type: 'takeoff' | 'land' | 'mode' | 'checkpoint' | 'rth' | 'shutter' | 'thunder' | 'crash' | 'splash'
+  ): void {
     if (!this.isInitialized || !this.ctx || !this.masterGain || this.muted) return;
     const now = this.ctx.currentTime;
+
+    if (type === 'crash' || type === 'splash') {
+      this.playImpact(type === 'splash');
+      return;
+    }
 
     if (type === 'thunder') {
       const osc = this.ctx.createOscillator();
@@ -217,5 +224,67 @@ export class DroneAudioEngine {
       playBeep(2200, 0, 0.035, 0.15);
       playBeep(1400, 0.04, 0.045, 0.1);
     }
+  }
+
+  /**
+   * Crash sound: a filtered noise burst (plastic impact or water splash) layered with a
+   * low thud, followed by the DJI-style descending alarm beeps.
+   */
+  private playImpact(isWater: boolean): void {
+    if (!this.ctx || !this.masterGain) return;
+    const ctx = this.ctx;
+    const now = ctx.currentTime;
+    const dur = isWater ? 0.9 : 0.45;
+
+    const noiseBuf = ctx.createBuffer(1, Math.floor(ctx.sampleRate * dur), ctx.sampleRate);
+    const data = noiseBuf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuf;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = isWater ? 'lowpass' : 'bandpass';
+    filter.frequency.setValueAtTime(isWater ? 2400 : 1800, now);
+    filter.frequency.exponentialRampToValueAtTime(isWater ? 300 : 500, now + dur);
+    filter.Q.value = isWater ? 0.7 : 1.2;
+
+    const noiseGain = ctx.createGain();
+    noiseGain.gain.setValueAtTime(0.001, now);
+    noiseGain.gain.linearRampToValueAtTime(isWater ? 0.32 : 0.45, now + 0.01);
+    noiseGain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+    noise.connect(filter);
+    filter.connect(noiseGain);
+    noiseGain.connect(this.masterGain);
+    noise.start(now);
+    noise.stop(now + dur);
+
+    const thud = ctx.createOscillator();
+    const thudGain = ctx.createGain();
+    thud.type = 'sine';
+    thud.frequency.setValueAtTime(isWater ? 90 : 140, now);
+    thud.frequency.exponentialRampToValueAtTime(40, now + 0.3);
+    thudGain.gain.setValueAtTime(0.001, now);
+    thudGain.gain.linearRampToValueAtTime(0.4, now + 0.01);
+    thudGain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+    thud.connect(thudGain);
+    thudGain.connect(this.masterGain);
+    thud.start(now);
+    thud.stop(now + 0.4);
+
+    // Controller alarm: three descending beeps
+    [880, 660, 440].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      const t = now + 0.5 + i * 0.22;
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.001, t);
+      g.gain.linearRampToValueAtTime(0.07, t + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+      osc.connect(g);
+      g.connect(this.masterGain!);
+      osc.start(t);
+      osc.stop(t + 0.2);
+    });
   }
 }

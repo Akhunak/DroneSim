@@ -1,5 +1,6 @@
 import {
   CameraMode,
+  CrashReason,
   DroneState,
   FlightMode,
   RCInput,
@@ -28,7 +29,17 @@ export interface HUDCallbacks {
   onRechargeBattery: () => void;
   onLeftStick: (x: number, y: number) => void;
   onRightStick: (x: number, y: number) => void;
+  /** User pressed "Tamam" on the crash popup: restart the flight from home. */
+  onCrashAcknowledged: () => void;
 }
+
+/** Let the player watch the drone fall / sink before the crash popup covers the view. */
+const CRASH_POPUP_DELAY_SEC = 1.4;
+
+const CRASH_REASON_TEXT: Record<CrashReason, string> = {
+  obstacle: 'Drone bir engele çarptı ve düştü.',
+  water: 'Drone suya düştü.',
+};
 
 const WEATHER_ICONS: Record<WeatherPreset, string> = {
   clear: '☀️',
@@ -116,6 +127,10 @@ export class DroneHUD {
   private elRechargeBtn!: HTMLButtonElement;
   private elSceneModal!: HTMLElement;
   private elSceneChipBtn!: HTMLButtonElement;
+  private elCrashModal!: HTMLElement;
+  private elCrashReason!: HTMLElement;
+  private elCrashStats!: HTMLElement;
+  private elCrashOkBtn!: HTMLButtonElement;
   private sceneOptionCards!: NodeListOf<HTMLButtonElement>;
 
   private modeButtons!: NodeListOf<HTMLButtonElement>;
@@ -128,6 +143,12 @@ export class DroneHUD {
   private rightStickDragging = false;
   private selectedSceneId: SceneId = 'mountain';
   public isSceneModalOpen = true;
+  public isCrashModalOpen = false;
+
+  /** True while any blocking popup is shown (flight inputs must be ignored). */
+  public get isModalOpen(): boolean {
+    return this.isSceneModalOpen || this.isCrashModalOpen;
+  }
 
   constructor(root: HTMLElement, callbacks: HUDCallbacks) {
     this.root = root;
@@ -583,6 +604,16 @@ export class DroneHUD {
           </div>
         </div>
       </div>
+
+      <div class="crash-modal-overlay hud-interactive hidden" id="crash-modal-overlay">
+        <div class="crash-modal-card" role="alertdialog" aria-modal="true" aria-labelledby="crash-modal-title" aria-describedby="crash-modal-reason">
+          <div class="crash-modal-icon" aria-hidden="true">!</div>
+          <h2 class="crash-modal-title" id="crash-modal-title">Kaza yaptınız</h2>
+          <p class="crash-modal-reason" id="crash-modal-reason"></p>
+          <div class="crash-modal-stats" id="crash-modal-stats"></div>
+          <button type="button" class="crash-ok-btn" id="btn-crash-ok">Tamam</button>
+        </div>
+      </div>
     `;
   }
 
@@ -643,6 +674,10 @@ export class DroneHUD {
     this.elHelpOverlay = q('#help-overlay');
     this.elRechargeBtn = q('#btn-recharge');
     this.elSceneModal = q('#scene-modal-overlay');
+    this.elCrashModal = q('#crash-modal-overlay');
+    this.elCrashReason = q('#crash-modal-reason');
+    this.elCrashStats = q('#crash-modal-stats');
+    this.elCrashOkBtn = q<HTMLButtonElement>('#btn-crash-ok');
     this.elSceneChipBtn = q('#btn-open-scenes');
     this.sceneOptionCards = this.root.querySelectorAll('.scene-option-card');
 
@@ -744,6 +779,12 @@ export class DroneHUD {
     this.root.querySelector('#btn-confirm-scene')!.addEventListener('click', () => {
       this.closeSceneModal();
       this.cb.onStartFlightFromModal(this.selectedSceneId);
+    });
+
+    // Crash popup: "Tamam" restarts the flight from home
+    this.elCrashOkBtn.addEventListener('click', () => {
+      this.closeCrashModal();
+      this.cb.onCrashAcknowledged();
     });
 
     // Help modal
@@ -892,6 +933,28 @@ export class DroneHUD {
     this.elSceneModal.classList.add('hidden');
   }
 
+  private openCrashModal(state: DroneState): void {
+    if (!state.crashReason) return;
+    this.isCrashModalOpen = true;
+    this.elCrashReason.textContent = CRASH_REASON_TEXT[state.crashReason];
+    const mm = Math.floor(state.flightTimeSec / 60).toString().padStart(2, '0');
+    const ss = Math.floor(state.flightTimeSec % 60).toString().padStart(2, '0');
+    this.elCrashStats.innerHTML = `
+      <span><b>${mm}:${ss}</b> uçuş süresi</span>
+      <span><b>${state.checkpointsCleared} / ${state.totalCheckpoints}</b> halka</span>
+      <span><b>${state.distanceFromHome.toFixed(0)} m</b> eve uzaklık</span>
+    `;
+    this.elCrashModal.classList.remove('hidden');
+    // Focus the button so Enter confirms straight away
+    this.elCrashOkBtn.focus({ preventScroll: true });
+  }
+
+  private closeCrashModal(): void {
+    this.isCrashModalOpen = false;
+    this.elCrashModal.classList.add('hidden');
+    this.elCrashOkBtn.blur();
+  }
+
   private updateWindLabels(speed: number, dirDeg: number): void {
     const bft = getBeaufortScale(speed);
     this.elWindSpeedVal.textContent = `${speed.toFixed(1)} m/s`;
@@ -909,7 +972,13 @@ export class DroneHUD {
     // 1. Flight Phase Status Pill
     let statusText = 'UÇUŞA HAZIR';
     let pillClass = 'status-pill';
-    if (state.flightPhase === 'ARMING') {
+    if (state.crashReason) {
+      statusText = state.crashReason === 'water' ? 'SUYA DÜŞTÜ' : 'KAZA';
+      pillClass = 'status-pill danger';
+      if (!this.isCrashModalOpen && state.crashTimeSec >= CRASH_POPUP_DELAY_SEC) {
+        this.openCrashModal(state);
+      }
+    } else if (state.flightPhase === 'ARMING') {
       statusText = 'MOTORLAR HAZIR';
     } else if (state.flightPhase === 'TAKING_OFF') {
       statusText = 'OTOMATİK KALKIŞ';
