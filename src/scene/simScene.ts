@@ -75,6 +75,10 @@ export class SimScene {
   private chasePos = new THREE.Vector3(0, 2.2, 4.5);
   private chaseLook = new THREE.Vector3(0, 0.6, 0);
 
+  /** Main-menu backdrop: slow cinematic orbit around the parked drone instead of the flight camera. */
+  private showcase = false;
+  private showcaseAngle = 0.9;
+
   // Orbit camera angles (user mouse-draggable in orbit mode)
   private orbitYaw = 0.55;
   private orbitPitch = 0.32;
@@ -275,6 +279,11 @@ export class SimScene {
     this.resetCamera();
   }
 
+  public setShowcase(active: boolean): void {
+    this.showcase = active;
+    if (!active) this.resetCamera();
+  }
+
   /** Snap the chase camera back behind the home pad (after a reset) instead of swooping there. */
   public resetCamera(): void {
     this.chasePos.set(0, 2.2, 4.5);
@@ -432,6 +441,26 @@ export class SimScene {
 
   private updateCamera(state: DroneState, dt: number): void {
     const pos = state.position;
+
+    if (this.showcase) {
+      // Wide, slowly circling shot; the drone sits left of centre so the menu panel doesn't hide it
+      this.showcaseAngle += dt * 0.07;
+      const a = this.showcaseAngle;
+      const radius = 1.9 + Math.sin(a * 0.6) * 0.25;
+      this.camera.position.set(
+        pos.x + Math.sin(a) * radius,
+        pos.y + 0.55 + Math.sin(a * 0.45) * 0.12,
+        pos.z + Math.cos(a) * radius
+      );
+      // Aim slightly to the drone's left (screen-space) so it appears right of the menu panel
+      this.tmpTarget.set(
+        pos.x - Math.cos(a) * 0.55,
+        pos.y + 0.3,
+        pos.z + Math.sin(a) * 0.55
+      );
+      this.camera.lookAt(this.tmpTarget);
+      return;
+    }
 
     if (this.cameraMode === 'gimbal') {
       // True 3-axis stabilized DJI Mini 5 Pro 4K Gimbal Camera view!

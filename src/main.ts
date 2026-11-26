@@ -11,10 +11,12 @@ import { SimScene } from './scene/simScene';
 import { DroneAudioEngine } from './audio/droneAudio';
 import { RCInputManager } from './controls/rcInput';
 import { DroneHUD } from './ui/hud';
+import { MainMenu } from './ui/mainMenu';
 
 function bootstrap(): void {
   const canvas = document.getElementById('sim-canvas') as HTMLCanvasElement;
   const hudRoot = document.getElementById('hud-root') as HTMLElement;
+  const appRoot = document.getElementById('app') as HTMLElement;
 
   let currentSceneId: SceneId = 'mountain';
   setActiveScene(currentSceneId);
@@ -43,6 +45,9 @@ function bootstrap(): void {
   const cameraOrder: CameraMode[] = ['chase', 'gimbal', 'los', 'orbit'];
 
   let hud!: DroneHUD;
+  let menu!: MainMenu;
+  /** Flight inputs are ignored while the main menu or any popup is on screen. */
+  const inputLocked = () => menu.isOpen || hud.isModalOpen;
 
   const applyScene = (sceneId: SceneId) => {
     if (sceneId === currentSceneId) return;
@@ -54,21 +59,46 @@ function bootstrap(): void {
     simScene.switchScene(sceneId, nextObstacles, nextCheckpoints);
     hud.syncSceneUI(sceneId);
     hud.syncModeUI(physics.state.flightMode);
+    menu.syncScene(sceneId);
   };
 
   const setMode = (mode: FlightMode) => {
     physics.setFlightMode(mode);
     hud.syncModeUI(mode);
+    menu.syncMode(mode);
   };
 
   const setWeather = (preset: WeatherPreset) => {
     weather.setPreset(preset);
     hud.syncWeatherUI(weather.getConfig());
+    menu.syncWeather(preset);
   };
 
   const setCamera = (cam: CameraMode) => {
     simScene.setCameraMode(cam);
     hud.syncCameraUI(cam);
+    menu.syncCamera(cam);
+  };
+
+  const toggleMute = () => {
+    audio.unlock();
+    audio.setMuted(!audio.muted);
+    hud.syncMuteUI(audio.muted);
+    menu.syncMute(audio.muted);
+  };
+
+  const openMainMenu = () => {
+    appRoot.classList.add('menu-active');
+    simScene.setShowcase(true);
+    menu.open();
+  };
+
+  const startSimulation = () => {
+    audio.unlock();
+    menu.close();
+    appRoot.classList.remove('menu-active');
+    simScene.setShowcase(false);
+    audio.playTone('takeoff');
   };
 
   const cycleCamera = () => {
@@ -91,22 +121,22 @@ function bootstrap(): void {
   // 3. RC Input Manager (Keyboard + Virtual Sticks + Physical USB Gamepad)
   const rcInput = new RCInputManager({
     onModeSelect: (mode) => {
-      if (!hud.isModalOpen) setMode(mode);
+      if (!inputLocked()) setMode(mode);
     },
     onTakeoffLand: () => {
-      if (!hud.isModalOpen) physics.toggleTakeoffLand();
+      if (!inputLocked()) physics.toggleTakeoffLand();
     },
     onRTH: () => {
-      if (!hud.isModalOpen) physics.toggleRTH();
+      if (!inputLocked()) physics.toggleRTH();
     },
     onCycleCamera: () => {
-      if (!hud.isModalOpen) cycleCamera();
+      if (!inputLocked()) cycleCamera();
     },
     onPhoto: () => {
-      if (!hud.isModalOpen) capturePhoto();
+      if (!inputLocked()) capturePhoto();
     },
     onToggleRecord: () => {
-      if (hud.isModalOpen) return;
+      if (inputLocked()) return;
       audio.unlock();
       audio.playTone('mode');
       physics.toggleRecording();
@@ -125,6 +155,10 @@ function bootstrap(): void {
       audio.unlock();
       applyScene(sceneId);
       audio.playTone('takeoff');
+    },
+    onSceneMenuDone: (sceneId) => {
+      applyScene(sceneId);
+      menu.focusItem('start');
     },
     onSelectMode: setMode,
     onSelectWeather: setWeather,
@@ -148,11 +182,7 @@ function bootstrap(): void {
       audio.playTone('mode');
       physics.toggleRecording();
     },
-    onToggleMute: () => {
-      audio.unlock();
-      audio.setMuted(!audio.muted);
-      hud.syncMuteUI(audio.muted);
-    },
+    onToggleMute: toggleMute,
     onResetDrone: () => {
       physics.resetToHome();
       hud.syncModeUI(physics.state.flightMode);
@@ -171,12 +201,33 @@ function bootstrap(): void {
     },
   });
 
+  // 5. Startup Main Menu (Start Simulation / Scenes / Options)
+  menu = new MainMenu(appRoot, {
+    onStart: startSimulation,
+    onOpenScenes: () => {
+      audio.playTone('mode');
+      hud.openSceneModal(true);
+    },
+    onSelectWeather: setWeather,
+    onSelectMode: setMode,
+    onSelectCamera: setCamera,
+    onToggleMute: toggleMute,
+    onFirstInteraction: () => audio.unlock(),
+    isCovered: () => hud.isModalOpen,
+  });
+
   // Sync initial UI state
   hud.syncSceneUI(currentSceneId);
   hud.syncModeUI(physics.state.flightMode);
   hud.syncWeatherUI(weather.getConfig());
   hud.syncCameraUI(simScene.cameraMode);
   hud.syncMuteUI(audio.muted);
+  menu.syncScene(currentSceneId);
+  menu.syncWeather(weather.getConfig().id);
+  menu.syncMode(physics.state.flightMode);
+  menu.syncCamera(simScene.cameraMode);
+  menu.syncMute(audio.muted);
+  openMainMenu();
 
   const neutralInput = {
     throttle: 0,
@@ -187,7 +238,7 @@ function bootstrap(): void {
     brake: false,
   };
 
-  // 5. Main 60 FPS Simulation Loop
+  // 6. Main 60 FPS Simulation Loop
   let lastTime = performance.now();
   let elapsed = 0;
 
@@ -197,8 +248,8 @@ function bootstrap(): void {
     lastTime = now;
     elapsed += dt;
 
-    // Sample inputs (lock sticks to neutral while Scene Selection Pop-up is open)
-    const rc = hud.isModalOpen ? neutralInput : rcInput.sample(dt);
+    // Sample inputs (lock sticks to neutral while the main menu or a popup is open)
+    const rc = inputLocked() ? neutralInput : rcInput.sample(dt);
 
     // Step weather & 6-DOF drone physics
     weather.update(dt);

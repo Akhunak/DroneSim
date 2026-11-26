@@ -14,6 +14,8 @@ import { getBeaufortScale, WEATHER_PRESET_ORDER, WEATHER_PRESETS } from '../simu
 export interface HUDCallbacks {
   onSelectScene: (sceneId: SceneId) => void;
   onStartFlightFromModal: (sceneId: SceneId) => void;
+  /** Scene popup opened from the main menu was confirmed/closed: go back to the menu. */
+  onSceneMenuDone: (sceneId: SceneId) => void;
   onSelectMode: (mode: FlightMode) => void;
   onSelectWeather: (preset: WeatherPreset) => void;
   onCustomWindChange: (speed: number, dirDeg: number) => void;
@@ -142,7 +144,10 @@ export class DroneHUD {
   private leftStickDragging = false;
   private rightStickDragging = false;
   private selectedSceneId: SceneId = 'mountain';
-  public isSceneModalOpen = true;
+  public isSceneModalOpen = false;
+  /** Scene popup was opened from the main menu (confirm returns there instead of starting). */
+  private sceneModalFromMenu = false;
+  private elSceneConfirmBtn!: HTMLButtonElement;
   public isCrashModalOpen = false;
 
   /** True while any blocking popup is shown (flight inputs must be ignored). */
@@ -487,8 +492,8 @@ export class DroneHUD {
         </div>
       </div>
 
-      <!-- STARTUP SCENE SELECTION POP-UP MODAL -->
-      <div class="scene-modal-overlay hud-interactive" id="scene-modal-overlay">
+      <!-- SCENE SELECTION POP-UP MODAL (from main menu "Scenes" or the top-bar scene chip) -->
+      <div class="scene-modal-overlay hud-interactive hidden" id="scene-modal-overlay">
         <div class="scene-modal-card">
           <div class="scene-modal-header">
             <div>
@@ -674,6 +679,7 @@ export class DroneHUD {
     this.elHelpOverlay = q('#help-overlay');
     this.elRechargeBtn = q('#btn-recharge');
     this.elSceneModal = q('#scene-modal-overlay');
+    this.elSceneConfirmBtn = q<HTMLButtonElement>('#btn-confirm-scene');
     this.elCrashModal = q('#crash-modal-overlay');
     this.elCrashReason = q('#crash-modal-reason');
     this.elCrashStats = q('#crash-modal-stats');
@@ -771,14 +777,20 @@ export class DroneHUD {
         if (!sceneId) return;
         this.selectedSceneId = sceneId;
         this.syncSceneUI(sceneId);
-        this.closeSceneModal();
-        this.cb.onStartFlightFromModal(sceneId);
+        this.confirmSceneModal();
       });
     });
 
-    this.root.querySelector('#btn-confirm-scene')!.addEventListener('click', () => {
-      this.closeSceneModal();
-      this.cb.onStartFlightFromModal(this.selectedSceneId);
+    this.elSceneConfirmBtn.addEventListener('click', () => this.confirmSceneModal());
+    // Clicking the dimmed backdrop or pressing Esc goes back to the menu
+    this.elSceneModal.addEventListener('click', (e) => {
+      if (e.target === this.elSceneModal && this.sceneModalFromMenu) this.confirmSceneModal();
+    });
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Escape' && this.isSceneModalOpen && this.sceneModalFromMenu) {
+        e.preventDefault();
+        this.confirmSceneModal();
+      }
     });
 
     // Crash popup: "Tamam" restarts the flight from home
@@ -923,9 +935,21 @@ export class DroneHUD {
       sceneId === 'city' ? '🏙️ Şehir İçi ▾' : '🏔️ Dağlık Arazi ▾';
   }
 
-  public openSceneModal(): void {
+  /** @param fromMenu opened from the main menu: confirming returns to the menu instead of starting. */
+  public openSceneModal(fromMenu = false): void {
+    this.sceneModalFromMenu = fromMenu;
+    this.elSceneConfirmBtn.textContent = fromMenu ? 'Sahneyi Seç ✓' : 'Uçuşa Başla ▸';
     this.isSceneModalOpen = true;
     this.elSceneModal.classList.remove('hidden');
+    this.root
+      .querySelector<HTMLButtonElement>('.scene-option-card.selected')
+      ?.focus({ preventScroll: true });
+  }
+
+  private confirmSceneModal(): void {
+    this.closeSceneModal();
+    if (this.sceneModalFromMenu) this.cb.onSceneMenuDone(this.selectedSceneId);
+    else this.cb.onStartFlightFromModal(this.selectedSceneId);
   }
 
   public closeSceneModal(): void {
