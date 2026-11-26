@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CheckpointRing, WorldObstacle } from '../types/simulation';
+import { CheckpointRing, SceneId, WorldObstacle } from '../types/simulation';
 import {
   getTerrainHeight,
   HOME_PAD_RADIUS,
@@ -7,7 +7,17 @@ import {
   WORLD_SIZE,
 } from '../simulation/terrain';
 
+interface TrafficCar {
+  mesh: THREE.Group;
+  axis: 'x' | 'z';
+  lanePos: number;
+  dir: 1 | -1;
+  speed: number;
+  limit: number;
+}
+
 export interface WorldHandles {
+  worldGroup: THREE.Group;
   waterMesh: THREE.Mesh;
   turbineRotors: Array<{ nacelle: THREE.Group; rotor: THREE.Group }>;
   checkpointMeshes: Map<number, { ring: THREE.Mesh; mat: THREE.MeshStandardMaterial }>;
@@ -22,14 +32,398 @@ export interface WorldHandles {
     checkpoints: CheckpointRing[],
     rthActive: boolean
   ) => void;
+  dispose: () => void;
+}
+
+/** Disposes a material together with every texture it references (map, emissiveMap, ...). */
+function disposeMaterial(mat: THREE.Material): void {
+  for (const value of Object.values(mat)) {
+    if (value instanceof THREE.Texture) value.dispose();
+  }
+  mat.dispose();
+}
+
+function createHelipad(
+  padY: number,
+  maxAnisotropy: number
+): { padGroup: THREE.Group; homeBeacon: THREE.Mesh } {
+  const padGroup = new THREE.Group();
+  padGroup.position.set(0, padY + 0.03, 0);
+
+  const padBase = new THREE.Mesh(
+    new THREE.CylinderGeometry(HOME_PAD_RADIUS, HOME_PAD_RADIUS + 0.5, 0.12, 32),
+    new THREE.MeshStandardMaterial({ color: 0x2c323b, roughness: 0.8 })
+  );
+  padBase.receiveShadow = true;
+  padGroup.add(padBase);
+
+  const padCanvas = document.createElement('canvas');
+  padCanvas.width = 512;
+  padCanvas.height = 512;
+  const ctx = padCanvas.getContext('2d')!;
+  ctx.fillStyle = '#262b33';
+  ctx.fillRect(0, 0, 512, 512);
+
+  ctx.strokeStyle = '#f97316';
+  ctx.lineWidth = 18;
+  ctx.beginPath();
+  ctx.arc(256, 256, 215, 0, Math.PI * 2);
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.65)';
+  ctx.lineWidth = 6;
+  ctx.setLineDash([20, 14]);
+  ctx.beginPath();
+  ctx.arc(256, 256, 178, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.fillStyle = '#f8fafc';
+  ctx.fillRect(168, 138, 38, 236);
+  ctx.fillRect(306, 138, 38, 236);
+  ctx.fillRect(168, 236, 176, 38);
+
+  ctx.fillStyle = '#38bdf8';
+  ctx.font = 'bold 34px Inter, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('N', 256, 74);
+
+  const padTex = new THREE.CanvasTexture(padCanvas);
+  padTex.colorSpace = THREE.SRGBColorSpace;
+  padTex.anisotropy = maxAnisotropy;
+  const padSurface = new THREE.Mesh(
+    new THREE.CircleGeometry(HOME_PAD_RADIUS - 0.15, 32),
+    new THREE.MeshStandardMaterial({ map: padTex, roughness: 0.72 })
+  );
+  padSurface.rotation.x = -Math.PI / 2;
+  padSurface.position.y = 0.065;
+  padSurface.receiveShadow = true;
+  padGroup.add(padSurface);
+
+  const padLedMat = new THREE.MeshStandardMaterial({
+    color: 0x38bdf8,
+    emissive: 0x38bdf8,
+    emissiveIntensity: 3.2,
+  });
+  for (let i = 0; i < 8; i++) {
+    const ang = (i / 8) * Math.PI * 2;
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.22, 8), padLedMat);
+    post.position.set(
+      Math.cos(ang) * (HOME_PAD_RADIUS - 0.35),
+      0.14,
+      Math.sin(ang) * (HOME_PAD_RADIUS - 0.35)
+    );
+    padGroup.add(post);
+  }
+
+  const homeBeacon = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.55, 1.4, 96, 20, 1, true),
+    new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.14,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    })
+  );
+  homeBeacon.position.set(0, padY + 48, 0);
+  homeBeacon.visible = false;
+
+  return { padGroup, homeBeacon };
+}
+
+/**
+ * Generates crisp procedural glass/window facade textures for urban skyscrapers.
+ */
+function createBuildingFacadeTexture(
+  style: 'glass-blue' | 'glass-dark' | 'concrete-warm' | 'landmark',
+  maxAnisotropy: number
+): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  const palettes = {
+    'glass-blue': { bg: '#25394f', frame: '#162433', winOn: '#a8dcff', winOff: '#365878', litRatio: 0.45 },
+    'glass-dark': { bg: '#1e2530', frame: '#11161d', winOn: '#ffdca8', winOff: '#2e3c4f', litRatio: 0.38 },
+    'concrete-warm': { bg: '#9ba3ad', frame: '#69727d', winOn: '#ffe5b8', winOff: '#3c4a5c', litRatio: 0.32 },
+    landmark: { bg: '#18344c', frame: '#0f2233', winOn: '#7dd3fc', winOff: '#295678', litRatio: 0.62 },
+  };
+  const pal = palettes[style];
+
+  ctx.fillStyle = pal.bg;
+  ctx.fillRect(0, 0, 256, 512);
+
+  // Horizontal floor bands & vertical mullions
+  const cols = 8;
+  const rows = 20;
+  const padX = 5;
+  const padY = 6;
+  const cellW = 256 / cols;
+  const cellH = 512 / rows;
+
+  let seed = style.length * 971;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+
+  for (let r = 0; r < rows; r++) {
+    // Structural spandrel beam
+    ctx.fillStyle = pal.frame;
+    ctx.fillRect(0, r * cellH, 256, 4);
+
+    for (let c = 0; c < cols; c++) {
+      const lit = rand() < pal.litRatio;
+      ctx.fillStyle = lit ? pal.winOn : pal.winOff;
+      ctx.fillRect(c * cellW + padX, r * cellH + padY, cellW - padX * 2, cellH - padY * 1.5);
+    }
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = maxAnisotropy;
+  return tex;
+}
+
+/**
+ * Generates a tileable 46m x 46m urban city block & avenue intersection texture!
+ */
+function createCityGroundTexture(maxAnisotropy: number): THREE.CanvasTexture {
+  const canvas = document.createElement('canvas');
+  canvas.width = 512;
+  canvas.height = 512;
+  const ctx = canvas.getContext('2d')!;
+
+  // Asphalt avenue background
+  ctx.fillStyle = '#2e343d';
+  ctx.fillRect(0, 0, 512, 512);
+
+  // Sidewalk & urban block interior (leaves ~16m road perimeter around each 46m block)
+  const roadEdge = 86;
+  ctx.fillStyle = '#8b939e';
+  ctx.fillRect(roadEdge, roadEdge, 512 - roadEdge * 2, 512 - roadEdge * 2);
+
+  // Inner courtyard concrete
+  ctx.fillStyle = '#6f7782';
+  ctx.fillRect(roadEdge + 14, roadEdge + 14, 512 - (roadEdge + 14) * 2, 512 - (roadEdge + 14) * 2);
+
+  // Yellow double centerlines along road edges (tile borders = avenue centers!)
+  ctx.fillStyle = '#eab308';
+  ctx.fillRect(0, 0, 512, 4);
+  ctx.fillRect(0, 508, 512, 4);
+  ctx.fillRect(0, 0, 4, 512);
+  ctx.fillRect(508, 0, 4, 512);
+
+  // White dashed lane dividers
+  ctx.fillStyle = 'rgba(241, 245, 249, 0.72)';
+  for (let i = 96; i < 416; i += 32) {
+    ctx.fillRect(i, 42, 16, 3);
+    ctx.fillRect(i, 467, 16, 3);
+    ctx.fillRect(42, i, 3, 16);
+    ctx.fillRect(467, i, 3, 16);
+  }
+
+  // Zebra crosswalk stripes at corners
+  ctx.fillStyle = 'rgba(248, 250, 252, 0.8)';
+  for (let s = 0; s < 5; s++) {
+    const offset = 12 + s * 14;
+    ctx.fillRect(roadEdge + 6, offset, 18, 7);
+    ctx.fillRect(512 - roadEdge - 24, offset, 18, 7);
+    ctx.fillRect(offset, roadEdge + 6, 7, 18);
+    ctx.fillRect(offset, 512 - roadEdge - 24, 7, 18);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  // Repeat so each tile is exactly 46m x 46m centered on each city block!
+  const repeats = WORLD_SIZE / 46;
+  tex.repeat.set(repeats, repeats);
+  tex.offset.set(0.5 - (repeats % 1) * 0.5, 0.5 - (repeats % 1) * 0.5);
+  tex.anisotropy = maxAnisotropy;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 export function buildWorld(
   scene: THREE.Scene,
+  sceneId: SceneId,
   obstacles: WorldObstacle[],
-  checkpoints: CheckpointRing[]
+  checkpoints: CheckpointRing[],
+  maxAnisotropy = 8
 ): WorldHandles {
-  // 1. Procedural Vertex-Colored Terrain
+  const worldGroup = new THREE.Group();
+  scene.add(worldGroup);
+
+  const turbineRotors: Array<{ nacelle: THREE.Group; rotor: THREE.Group }> = [];
+  const beaconLights: THREE.MeshStandardMaterial[] = [];
+  const treeGroups: THREE.Group[] = [];
+  const trafficCars: TrafficCar[] = [];
+
+  // Shared Water Plane (Lake in Mountain, River Canal in City)
+  const waterGeom = new THREE.PlaneGeometry(WORLD_SIZE * 0.96, WORLD_SIZE * 0.96, 24, 24);
+  waterGeom.rotateX(-Math.PI / 2);
+  const waterMat = new THREE.MeshStandardMaterial({
+    color: sceneId === 'city' ? 0x165373 : 0x1e6c93,
+    roughness: 0.16,
+    metalness: 0.48,
+    transparent: true,
+    opacity: 0.9,
+  });
+  const waterMesh = new THREE.Mesh(waterGeom, waterMat);
+  waterMesh.position.y = WATER_LEVEL;
+  waterMesh.receiveShadow = true;
+  worldGroup.add(waterMesh);
+
+  // Shared Helipad + RTH Beacon
+  const padY = getTerrainHeight(0, 0, sceneId);
+  const { padGroup, homeBeacon } = createHelipad(padY, maxAnisotropy);
+  worldGroup.add(padGroup);
+  worldGroup.add(homeBeacon);
+
+  if (sceneId === 'mountain') {
+    buildMountainWorld(worldGroup, obstacles, turbineRotors, beaconLights, treeGroups);
+  } else {
+    buildCityWorld(worldGroup, obstacles, beaconLights, treeGroups, trafficCars, maxAnisotropy);
+  }
+
+  // Aerial Checkpoint Rings (both scenes)
+  const checkpointMeshes = new Map<number, { ring: THREE.Mesh; mat: THREE.MeshStandardMaterial }>();
+  for (const cp of checkpoints) {
+    const mat = new THREE.MeshStandardMaterial({
+      color: sceneId === 'city' ? 0xf59e0b : 0x38bdf8,
+      emissive: sceneId === 'city' ? 0xd97706 : 0x0284c7,
+      emissiveIntensity: 2.2,
+      roughness: 0.25,
+      metalness: 0.4,
+    });
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(cp.radius, 0.28, 12, 36), mat);
+    ring.position.set(cp.x, cp.y, cp.z);
+    ring.rotation.y = cp.rotationY;
+    worldGroup.add(ring);
+    checkpointMeshes.set(cp.id, { ring, mat });
+  }
+
+  const update = (
+    dt: number,
+    elapsed: number,
+    windSpeed: number,
+    windDirDeg: number,
+    cps: CheckpointRing[],
+    rthActive: boolean
+  ) => {
+    // Wind turbines (Mountain scene)
+    if (turbineRotors.length > 0) {
+      const targetNacelleYaw = -(windDirDeg * Math.PI) / 180;
+      const rotorRadPerSec = 0.25 + windSpeed * 0.28;
+      for (const t of turbineRotors) {
+        t.nacelle.rotation.y = THREE.MathUtils.lerp(t.nacelle.rotation.y, targetNacelleYaw, dt * 0.8);
+        t.rotor.rotation.z -= rotorRadPerSec * dt;
+      }
+    }
+
+    // Animated city traffic cars (City scene)
+    for (const car of trafficCars) {
+      if (car.axis === 'z') {
+        car.mesh.position.z += car.dir * car.speed * dt;
+        if (car.mesh.position.z > car.limit) car.mesh.position.z = -car.limit;
+        if (car.mesh.position.z < -car.limit) car.mesh.position.z = car.limit;
+      } else {
+        car.mesh.position.x += car.dir * car.speed * dt;
+        if (car.mesh.position.x > car.limit) car.mesh.position.x = -car.limit;
+        if (car.mesh.position.x < -car.limit) car.mesh.position.x = car.limit;
+      }
+    }
+
+    // Subtle tree sway in wind
+    const swayAmp = Math.min(0.11, windSpeed * 0.0075);
+    if (swayAmp > 0.008) {
+      const windRad = (windDirDeg * Math.PI) / 180;
+      const sx = -Math.sin(windRad);
+      const sz = Math.cos(windRad);
+      for (let i = 0; i < treeGroups.length; i++) {
+        const phase = Math.sin(elapsed * (1.8 + (i % 5) * 0.25) + i * 0.7);
+        const tilt = swayAmp * (0.5 + 0.5 * phase);
+        treeGroups[i].rotation.z = -sx * tilt;
+        treeGroups[i].rotation.x = sz * tilt;
+      }
+    }
+
+    // Aviation warning beacons blink on towers & skyscrapers
+    const blink = Math.sin(elapsed * 3.8) > 0.35 ? 8.0 : 0.25;
+    for (const m of beaconLights) {
+      m.emissiveIntensity = blink;
+    }
+
+    // RTH Home Beacon
+    homeBeacon.visible = rthActive;
+    if (rthActive) {
+      const bm = homeBeacon.material as THREE.MeshBasicMaterial;
+      bm.opacity = 0.14 + Math.sin(elapsed * 5) * 0.06;
+    }
+
+    // Checkpoints
+    const baseHex = sceneId === 'city' ? 0xf59e0b : 0x38bdf8;
+    const baseEmissive = sceneId === 'city' ? 0xd97706 : 0x0ea5e9;
+    for (const cp of cps) {
+      const entry = checkpointMeshes.get(cp.id);
+      if (!entry) continue;
+      if (cp.cleared) {
+        entry.mat.color.setHex(0x22c55e);
+        entry.mat.emissive.setHex(0x16a34a);
+        entry.mat.emissiveIntensity = 0.5;
+        entry.ring.scale.setScalar(0.92);
+      } else {
+        entry.mat.color.setHex(baseHex);
+        entry.mat.emissive.setHex(baseEmissive);
+        entry.mat.emissiveIntensity = 2.1 + Math.sin(elapsed * 3 + cp.id) * 0.6;
+        entry.ring.scale.setScalar(1.0);
+      }
+    }
+
+    waterMesh.position.y = WATER_LEVEL + Math.sin(elapsed * 1.1) * 0.04;
+  };
+
+  const dispose = () => {
+    scene.remove(worldGroup);
+    // Collect unique materials first: many meshes share one material, and
+    // material.dispose() does NOT free the textures it references.
+    const materials = new Set<THREE.Material>();
+    worldGroup.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry.dispose();
+        const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
+        mats.forEach((m) => materials.add(m));
+      }
+    });
+    materials.forEach(disposeMaterial);
+  };
+
+  return {
+    worldGroup,
+    waterMesh,
+    turbineRotors,
+    checkpointMeshes,
+    homeBeacon,
+    beaconLights,
+    treeGroups,
+    update,
+    dispose,
+  };
+}
+
+function buildMountainWorld(
+  worldGroup: THREE.Group,
+  obstacles: WorldObstacle[],
+  turbineRotors: Array<{ nacelle: THREE.Group; rotor: THREE.Group }>,
+  beaconLights: THREE.MeshStandardMaterial[],
+  treeGroups: THREE.Group[]
+): void {
+  // Vertex-Colored Mountain Terrain
   const segs = 160;
   const terrainGeom = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, segs, segs);
   terrainGeom.rotateX(-Math.PI / 2);
@@ -41,14 +435,14 @@ export function buildWorld(
   for (let i = 0; i < posAttr.count; i++) {
     const x = posAttr.getX(i);
     const z = posAttr.getZ(i);
-    const y = getTerrainHeight(x, z);
+    const y = getTerrainHeight(x, z, 'mountain');
     posAttr.setY(i, y);
 
     const distHome = Math.hypot(x, z);
     if (distHome < HOME_PAD_RADIUS + 2.5) {
-      tmpColor.setHex(0x6d747d); // gravel apron around pad
+      tmpColor.setHex(0x6d747d);
     } else if (y < WATER_LEVEL + 0.6) {
-      tmpColor.setHex(0xc8b896); // sandy shoreline
+      tmpColor.setHex(0xc8b896);
     } else if (y < 9) {
       const n = (Math.sin(x * 0.08) * Math.cos(z * 0.08) + 1) * 0.5;
       tmpColor.setHex(0x4c7c44).lerp(new THREE.Color(0x3a6638), n);
@@ -56,9 +450,9 @@ export function buildWorld(
       const n = (Math.sin(x * 0.05) + 1) * 0.5;
       tmpColor.setHex(0x3d6139).lerp(new THREE.Color(0x5b6948), n);
     } else if (y < 42) {
-      tmpColor.setHex(0x6f7378); // rocky alpine slope
+      tmpColor.setHex(0x6f7378);
     } else {
-      tmpColor.setHex(0xd6dee6); // high mountain peak
+      tmpColor.setHex(0xd6dee6);
     }
 
     colors[i * 3] = tmpColor.r;
@@ -69,121 +463,12 @@ export function buildWorld(
   terrainGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
   terrainGeom.computeVertexNormals();
 
-  const terrainMat = new THREE.MeshStandardMaterial({
-    vertexColors: true,
-    roughness: 0.92,
-    metalness: 0.02,
-  });
-  const terrainMesh = new THREE.Mesh(terrainGeom, terrainMat);
+  const terrainMesh = new THREE.Mesh(
+    terrainGeom,
+    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.02 })
+  );
   terrainMesh.receiveShadow = true;
-  scene.add(terrainMesh);
-
-  // 2. Shimmering Water Plane (Coastal Lake)
-  const waterGeom = new THREE.PlaneGeometry(WORLD_SIZE * 0.95, WORLD_SIZE * 0.95, 32, 32);
-  waterGeom.rotateX(-Math.PI / 2);
-  const waterMat = new THREE.MeshStandardMaterial({
-    color: 0x1e6c93,
-    roughness: 0.16,
-    metalness: 0.45,
-    transparent: true,
-    opacity: 0.88,
-  });
-  const waterMesh = new THREE.Mesh(waterGeom, waterMat);
-  waterMesh.position.y = WATER_LEVEL;
-  waterMesh.receiveShadow = true;
-  scene.add(waterMesh);
-
-  // 3. DJI Helipad Home Point Launchpad at (0, 0)
-  const padGroup = new THREE.Group();
-  const padY = getTerrainHeight(0, 0);
-  padGroup.position.set(0, padY + 0.03, 0);
-
-  const padBase = new THREE.Mesh(
-    new THREE.CylinderGeometry(HOME_PAD_RADIUS, HOME_PAD_RADIUS + 0.5, 0.12, 32),
-    new THREE.MeshStandardMaterial({ color: 0x2c323b, roughness: 0.8 })
-  );
-  padBase.receiveShadow = true;
-  padGroup.add(padBase);
-
-  // Painted Helipad Canvas Texture ("H" + Orange Ring + Compass Ticks)
-  const padCanvas = document.createElement('canvas');
-  padCanvas.width = 512;
-  padCanvas.height = 512;
-  const ctx = padCanvas.getContext('2d')!;
-  ctx.fillStyle = '#262b33';
-  ctx.fillRect(0, 0, 512, 512);
-
-  // Outer safety ring
-  ctx.strokeStyle = '#f97316';
-  ctx.lineWidth = 18;
-  ctx.beginPath();
-  ctx.arc(256, 256, 215, 0, Math.PI * 2);
-  ctx.stroke();
-
-  // Inner dashed ring
-  ctx.strokeStyle = 'rgba(255,255,255,0.65)';
-  ctx.lineWidth = 6;
-  ctx.setLineDash([20, 14]);
-  ctx.beginPath();
-  ctx.arc(256, 256, 178, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Crisp "H"
-  ctx.fillStyle = '#f8fafc';
-  ctx.fillRect(168, 138, 38, 236);
-  ctx.fillRect(306, 138, 38, 236);
-  ctx.fillRect(168, 236, 176, 38);
-
-  // North arrow "N"
-  ctx.fillStyle = '#38bdf8';
-  ctx.font = 'bold 34px Inter, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('N', 256, 74);
-
-  const padTex = new THREE.CanvasTexture(padCanvas);
-  const padSurface = new THREE.Mesh(
-    new THREE.CircleGeometry(HOME_PAD_RADIUS - 0.15, 32),
-    new THREE.MeshStandardMaterial({ map: padTex, roughness: 0.72 })
-  );
-  padSurface.rotation.x = -Math.PI / 2;
-  padSurface.position.y = 0.065;
-  padSurface.receiveShadow = true;
-  padGroup.add(padSurface);
-
-  // Perimeter pad LED markers
-  const padLedMat = new THREE.MeshStandardMaterial({
-    color: 0x38bdf8,
-    emissive: 0x38bdf8,
-    emissiveIntensity: 1.8,
-  });
-  for (let i = 0; i < 8; i++) {
-    const ang = (i / 8) * Math.PI * 2;
-    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.22, 8), padLedMat);
-    post.position.set(Math.cos(ang) * (HOME_PAD_RADIUS - 0.35), 0.14, Math.sin(ang) * (HOME_PAD_RADIUS - 0.35));
-    padGroup.add(post);
-  }
-  scene.add(padGroup);
-
-  // Vertical translucent RTH Home Beacon cylinder (visible when returning home)
-  const homeBeacon = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.55, 1.4, 48, 20, 1, true),
-    new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
-      transparent: true,
-      opacity: 0.14,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    })
-  );
-  homeBeacon.position.set(0, padY + 24, 0);
-  homeBeacon.visible = false;
-  scene.add(homeBeacon);
-
-  // 4. Build Obstacles & Landmarks
-  const turbineRotors: Array<{ nacelle: THREE.Group; rotor: THREE.Group }> = [];
-  const beaconLights: THREE.MeshStandardMaterial[] = [];
-  const treeGroups: THREE.Group[] = [];
+  worldGroup.add(terrainMesh);
 
   const concreteMat = new THREE.MeshStandardMaterial({ color: 0xcbd2da, roughness: 0.75 });
   const darkMetalMat = new THREE.MeshStandardMaterial({ color: 0x2c3440, roughness: 0.4, metalness: 0.65 });
@@ -235,7 +520,7 @@ export function buildWorld(
       bulb.position.y = obs.height + 0.35;
       g.add(bulb);
 
-      scene.add(g);
+      worldGroup.add(g);
     } else if (obs.id === 'hangar') {
       const g = new THREE.Group();
       g.position.set(obs.x, obs.y, obs.z);
@@ -259,7 +544,7 @@ export function buildWorld(
       strip.position.set(0, 5.1, -obs.depth * 0.5 - 0.08);
       g.add(strip);
 
-      scene.add(g);
+      worldGroup.add(g);
     } else if (obs.id.startsWith('cabin-')) {
       const g = new THREE.Group();
       g.position.set(obs.x, obs.y, obs.z);
@@ -283,7 +568,7 @@ export function buildWorld(
       win.position.y = 2.4;
       g.add(win);
 
-      scene.add(g);
+      worldGroup.add(g);
     } else if (obs.id.startsWith('turbine-')) {
       const g = new THREE.Group();
       g.position.set(obs.x, obs.y, obs.z);
@@ -320,14 +605,14 @@ export function buildWorld(
       }
 
       turbineRotors.push({ nacelle, rotor });
-      scene.add(g);
+      worldGroup.add(g);
     } else if (obs.id === 'radio-mast') {
       const g = new THREE.Group();
       g.position.set(obs.x, obs.y, obs.z);
 
       const tower = new THREE.Mesh(
         new THREE.CylinderGeometry(0.35, 1.8, obs.height, 6),
-        new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.5, wireframe: false })
+        new THREE.MeshStandardMaterial({ color: 0xef4444, roughness: 0.5 })
       );
       tower.position.y = obs.height * 0.5;
       tower.castShadow = true;
@@ -343,7 +628,7 @@ export function buildWorld(
       topLight.position.y = obs.height + 0.5;
       g.add(topLight);
 
-      scene.add(g);
+      worldGroup.add(g);
     } else if (obs.id.startsWith('tree-')) {
       const g = new THREE.Group();
       g.position.set(obs.x, obs.y, obs.z);
@@ -369,98 +654,339 @@ export function buildWorld(
       g.add(tier3);
 
       treeGroups.push(g);
-      scene.add(g);
+      worldGroup.add(g);
+    }
+  }
+}
+
+function buildCityWorld(
+  worldGroup: THREE.Group,
+  obstacles: WorldObstacle[],
+  beaconLights: THREE.MeshStandardMaterial[],
+  treeGroups: THREE.Group[],
+  trafficCars: TrafficCar[],
+  maxAnisotropy: number
+): void {
+  // 1. Urban City Ground with Multi-Lane Avenues, Sidewalks & Canal Depression
+  const segs = 128;
+  const groundGeom = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE, segs, segs);
+  groundGeom.rotateX(-Math.PI / 2);
+  const posAttr = groundGeom.attributes.position;
+  for (let i = 0; i < posAttr.count; i++) {
+    const x = posAttr.getX(i);
+    const z = posAttr.getZ(i);
+    posAttr.setY(i, getTerrainHeight(x, z, 'city'));
+  }
+  groundGeom.computeVertexNormals();
+
+  const cityGroundTex = createCityGroundTexture(maxAnisotropy);
+  const cityGroundMesh = new THREE.Mesh(
+    groundGeom,
+    new THREE.MeshStandardMaterial({
+      map: cityGroundTex,
+      roughness: 0.85,
+      metalness: 0.05,
+    })
+  );
+  cityGroundMesh.receiveShadow = true;
+  worldGroup.add(cityGroundMesh);
+
+  // 2. Central Launch Plaza Decorative Pavement at (0, 0)
+  const plazaSlab = new THREE.Mesh(
+    new THREE.BoxGeometry(28, 0.08, 28),
+    new THREE.MeshStandardMaterial({ color: 0x94a3b8, roughness: 0.78 })
+  );
+  plazaSlab.position.set(0, 0.01, 0);
+  plazaSlab.receiveShadow = true;
+  worldGroup.add(plazaSlab);
+
+  // 3. Central City Park Lawn & Fountain at (-46, 46)
+  const parkLawn = new THREE.Mesh(
+    new THREE.BoxGeometry(30, 0.12, 30),
+    new THREE.MeshStandardMaterial({ color: 0x3f7a44, roughness: 0.92 })
+  );
+  parkLawn.position.set(-46, 0.04, 46);
+  parkLawn.receiveShadow = true;
+  worldGroup.add(parkLawn);
+
+  const fountainRim = new THREE.Mesh(
+    new THREE.CylinderGeometry(4.2, 4.6, 0.8, 20),
+    new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.6 })
+  );
+  fountainRim.position.set(-46, 0.45, 46);
+  worldGroup.add(fountainRim);
+
+  const fountainPool = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.6, 3.6, 0.65, 20),
+    new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.12, metalness: 0.5 })
+  );
+  fountainPool.position.set(-46, 0.55, 46);
+  worldGroup.add(fountainPool);
+
+  // 4. Bridges crossing the East Canal (x = 148)
+  const bridgeMat = new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.75 });
+  const railMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.45, metalness: 0.4 });
+  for (const bz of [-69, -23, 23, 69]) {
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(52, 0.9, 14), bridgeMat);
+    deck.position.set(148, 0.35, bz);
+    deck.castShadow = true;
+    deck.receiveShadow = true;
+    worldGroup.add(deck);
+
+    for (const side of [-6.6, 6.6]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(52, 1.1, 0.4), railMat);
+      rail.position.set(148, 1.2, bz + side);
+      worldGroup.add(rail);
     }
   }
 
-  // 5. Aerial Checkpoint Rings
-  const checkpointMeshes = new Map<number, { ring: THREE.Mesh; mat: THREE.MeshStandardMaterial }>();
-  for (const cp of checkpoints) {
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x38bdf8,
-      emissive: 0x0284c7,
-      emissiveIntensity: 1.4,
-      roughness: 0.25,
-      metalness: 0.4,
+  // 5. Skyscrapers, Towers, Rooftops & Park Trees
+  const facadeTextures = [
+    createBuildingFacadeTexture('glass-blue', maxAnisotropy),
+    createBuildingFacadeTexture('glass-dark', maxAnisotropy),
+    createBuildingFacadeTexture('concrete-warm', maxAnisotropy),
+  ];
+  const landmarkTex = createBuildingFacadeTexture('landmark', maxAnisotropy);
+
+  const roofMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.82 });
+  const hvacMat = new THREE.MeshStandardMaterial({ color: 0x64748b, roughness: 0.6, metalness: 0.3 });
+  const spireMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.3, metalness: 0.7 });
+  const woodMat = new THREE.MeshStandardMaterial({ color: 0x5d4037, roughness: 0.9 });
+  const leafMat = new THREE.MeshStandardMaterial({ color: 0x2f7038, roughness: 0.85 });
+
+  let styleIdx = 0;
+
+  for (const obs of obstacles) {
+    if (obs.id.startsWith('city-tree-')) {
+      const g = new THREE.Group();
+      g.position.set(obs.x, obs.y, obs.z);
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.38, obs.height * 0.42, 7), woodMat);
+      trunk.position.y = obs.height * 0.21;
+      trunk.castShadow = true;
+      g.add(trunk);
+
+      const canopy = new THREE.Mesh(new THREE.DodecahedronGeometry(obs.width * 0.62, 1), leafMat);
+      canopy.position.y = obs.height * 0.65;
+      canopy.castShadow = true;
+      g.add(canopy);
+
+      treeGroups.push(g);
+      worldGroup.add(g);
+      continue;
+    }
+
+    if (obs.id === 'city-cyl-tower') {
+      const g = new THREE.Group();
+      g.position.set(obs.x, obs.y, obs.z);
+
+      const tex = facadeTextures[0].clone();
+      tex.needsUpdate = true;
+      tex.repeat.set(4, Math.max(1, Math.round(obs.height / 24)));
+
+      const cylMat = new THREE.MeshStandardMaterial({
+        map: tex,
+        roughness: 0.22,
+        metalness: 0.55,
+      });
+      const cyl = new THREE.Mesh(
+        new THREE.CylinderGeometry(obs.width * 0.5, obs.width * 0.5, obs.height, 28),
+        [cylMat, roofMat, roofMat]
+      );
+      cyl.position.y = obs.height * 0.5;
+      cyl.castShadow = true;
+      cyl.receiveShadow = true;
+      g.add(cyl);
+
+      // Crown neon ring
+      const crownMat = new THREE.MeshStandardMaterial({
+        color: 0x38bdf8,
+        emissive: 0x38bdf8,
+        emissiveIntensity: 3.0,
+      });
+      const crown = new THREE.Mesh(new THREE.TorusGeometry(obs.width * 0.49, 0.28, 8, 32), crownMat);
+      crown.rotation.x = Math.PI / 2;
+      crown.position.y = obs.height - 0.4;
+      g.add(crown);
+
+      // Aviation beacon
+      const lightMat = new THREE.MeshStandardMaterial({
+        color: 0xff2a2a,
+        emissive: 0xff2a2a,
+        emissiveIntensity: 2.8,
+      });
+      beaconLights.push(lightMat);
+      const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.45, 10, 10), lightMat);
+      beacon.position.y = obs.height + 1.2;
+      g.add(beacon);
+
+      worldGroup.add(g);
+      continue;
+    }
+
+    // Rectangular skyscraper / landmark tower
+    const isLandmark = obs.id === 'city-landmark-tower';
+    const baseTex = isLandmark ? landmarkTex : facadeTextures[styleIdx++ % facadeTextures.length];
+    const tex = baseTex.clone();
+    tex.needsUpdate = true;
+    tex.repeat.set(Math.max(1, Math.round(obs.width / 14)), Math.max(1, Math.round(obs.height / 22)));
+
+    const sideMat = new THREE.MeshStandardMaterial({
+      map: tex,
+      roughness: isLandmark ? 0.18 : 0.32,
+      metalness: isLandmark ? 0.62 : 0.38,
     });
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(cp.radius, 0.26, 12, 36), mat);
-    ring.position.set(cp.x, cp.y, cp.z);
-    ring.rotation.y = cp.rotationY;
-    scene.add(ring);
-    checkpointMeshes.set(cp.id, { ring, mat });
+
+    const g = new THREE.Group();
+    g.position.set(obs.x, obs.y, obs.z);
+
+    // Box with facade on 4 vertical walls & flat dark roof on top
+    const bldg = new THREE.Mesh(
+      new THREE.BoxGeometry(obs.width, obs.height, obs.depth),
+      [sideMat, sideMat, roofMat, roofMat, sideMat, sideMat]
+    );
+    bldg.position.y = obs.height * 0.5;
+    bldg.castShadow = true;
+    bldg.receiveShadow = true;
+    g.add(bldg);
+
+    // Rooftop parapet trim
+    const parapet = new THREE.Mesh(
+      new THREE.BoxGeometry(obs.width + 0.4, 0.65, obs.depth + 0.4),
+      hvacMat
+    );
+    parapet.position.y = obs.height + 0.15;
+    g.add(parapet);
+
+    // Rooftop mechanical HVAC penthouse (offset so flat roof landing space remains clear!)
+    const hvac = new THREE.Mesh(
+      new THREE.BoxGeometry(obs.width * 0.34, 2.2, obs.depth * 0.34),
+      hvacMat
+    );
+    hvac.position.set(obs.width * 0.22, obs.height + 1.1, obs.depth * 0.22);
+    hvac.castShadow = true;
+    g.add(hvac);
+
+    // Tall skyscrapers get an architectural spire + blinking red aviation obstruction light
+    if (isLandmark || obs.height >= 54) {
+      const spireH = isLandmark ? 18 : 8;
+      const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.42, spireH, 8), spireMat);
+      spire.position.set(-obs.width * 0.22, obs.height + spireH * 0.5, -obs.depth * 0.22);
+      g.add(spire);
+
+      const lightMat = new THREE.MeshStandardMaterial({
+        color: 0xff2222,
+        emissive: 0xff2222,
+        emissiveIntensity: 3.0,
+      });
+      beaconLights.push(lightMat);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.42, 10, 10), lightMat);
+      bulb.position.set(-obs.width * 0.22, obs.height + spireH + 0.35, -obs.depth * 0.22);
+      g.add(bulb);
+    }
+
+    if (isLandmark) {
+      // Glowing cyan sky-trim on the iconic landmark tower
+      const trimMat = new THREE.MeshStandardMaterial({
+        color: 0x38bdf8,
+        emissive: 0x0ea5e9,
+        emissiveIntensity: 3.0,
+      });
+      const topTrim = new THREE.Mesh(new THREE.BoxGeometry(obs.width + 0.6, 0.55, obs.depth + 0.6), trimMat);
+      topTrim.position.y = obs.height - 0.3;
+      g.add(topTrim);
+    }
+
+    worldGroup.add(g);
   }
 
-  const update = (
-    dt: number,
-    elapsed: number,
-    windSpeed: number,
-    windDirDeg: number,
-    cps: CheckpointRing[],
-    rthActive: boolean
-  ) => {
-    // Rotate wind turbine blades proportional to wind speed & align nacelle into wind
-    const targetNacelleYaw = -(windDirDeg * Math.PI) / 180;
-    const rotorRadPerSec = 0.25 + windSpeed * 0.28;
-    for (const t of turbineRotors) {
-      t.nacelle.rotation.y = THREE.MathUtils.lerp(t.nacelle.rotation.y, targetNacelleYaw, dt * 0.8);
-      t.rotor.rotation.z -= rotorRadPerSec * dt;
+  // 6. Avenue Street Lamps around the Downtown Core
+  const poleMat = new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.5, metalness: 0.6 });
+  const lampGlowMat = new THREE.MeshStandardMaterial({
+    color: 0xfef08a,
+    emissive: 0xfde047,
+    emissiveIntensity: 2.0,
+  });
+  for (const lane of [-23, 23]) {
+    for (let pos = -115; pos <= 115; pos += 26) {
+      // Along N-S avenues
+      const lampNS = new THREE.Group();
+      lampNS.position.set(lane + 6.5, 0, pos);
+      const p1 = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 6.2, 6), poleMat);
+      p1.position.y = 3.1;
+      lampNS.add(p1);
+      const b1 = new THREE.Mesh(new THREE.SphereGeometry(0.28, 8, 8), lampGlowMat);
+      b1.position.set(-0.6, 6.2, 0);
+      lampNS.add(b1);
+      worldGroup.add(lampNS);
     }
+  }
 
-    // Subtle tree sway in strong winds
-    const swayAmp = Math.min(0.11, windSpeed * 0.0075);
-    if (swayAmp > 0.008) {
-      const windRad = (windDirDeg * Math.PI) / 180;
-      const sx = -Math.sin(windRad);
-      const sz = Math.cos(windRad);
-      for (let i = 0; i < treeGroups.length; i++) {
-        const phase = Math.sin(elapsed * (1.8 + (i % 5) * 0.25) + i * 0.7);
-        const tilt = swayAmp * (0.5 + 0.5 * phase);
-        treeGroups[i].rotation.z = -sx * tilt;
-        treeGroups[i].rotation.x = sz * tilt;
-      }
-    }
+  // 7. Animated City Traffic Cars moving smoothly along main avenues!
+  const carColors = [0xe11d48, 0x2563eb, 0xf8fafc, 0xf59e0b, 0x10b981, 0x64748b, 0x1e293b];
+  const headMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfef9c3, emissiveIntensity: 2.2 });
+  const tailMat = new THREE.MeshStandardMaterial({ color: 0xff2222, emissive: 0xef4444, emissiveIntensity: 4.5 });
+  const cabinGlassMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.15, metalness: 0.8 });
 
-    // Aviation warning beacons blink
-    const blink = Math.sin(elapsed * 3.8) > 0.35 ? 3.2 : 0.25;
-    for (const m of beaconLights) {
-      m.emissiveIntensity = blink;
-    }
+  const makeCar = (colorHex: number): THREE.Group => {
+    const cg = new THREE.Group();
+    const chassis = new THREE.Mesh(
+      new THREE.BoxGeometry(1.9, 0.72, 4.1),
+      new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.35, metalness: 0.45 })
+    );
+    chassis.position.y = 0.52;
+    chassis.castShadow = true;
+    cg.add(chassis);
 
-    // RTH home beacon visibility & gentle pulse
-    homeBeacon.visible = rthActive;
-    if (rthActive) {
-      const bm = homeBeacon.material as THREE.MeshBasicMaterial;
-      bm.opacity = 0.14 + Math.sin(elapsed * 5) * 0.06;
-    }
+    const cabin = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.56, 2.0), cabinGlassMat);
+    cabin.position.set(0, 1.08, -0.15);
+    cg.add(cabin);
 
-    // Checkpoint ring colors & pulse
-    for (const cp of cps) {
-      const entry = checkpointMeshes.get(cp.id);
-      if (!entry) continue;
-      if (cp.cleared) {
-        entry.mat.color.setHex(0x22c55e);
-        entry.mat.emissive.setHex(0x16a34a);
-        entry.mat.emissiveIntensity = 0.5;
-        entry.ring.scale.setScalar(0.92);
-      } else {
-        entry.mat.color.setHex(0x38bdf8);
-        entry.mat.emissive.setHex(0x0ea5e9);
-        entry.mat.emissiveIntensity = 1.2 + Math.sin(elapsed * 3 + cp.id) * 0.45;
-        entry.ring.scale.setScalar(1.0);
-      }
-    }
+    const hl = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.18, 0.12), headMat);
+    hl.position.set(0, 0.58, 2.06);
+    cg.add(hl);
 
-    // Subtle water shimmer
-    waterMesh.position.y = WATER_LEVEL + Math.sin(elapsed * 1.1) * 0.04;
+    const tl = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.18, 0.12), tailMat);
+    tl.position.set(0, 0.58, -2.06);
+    cg.add(tl);
+
+    return cg;
   };
 
-  return {
-    waterMesh,
-    turbineRotors,
-    checkpointMeshes,
-    homeBeacon,
-    beaconLights,
-    treeGroups,
-    update,
-  };
+  const avenueCenters = [-69, -23, 23, 69];
+  let carIdx = 0;
+  for (const ave of avenueCenters) {
+    for (const dir of [1, -1] as const) {
+      // North-South cars
+      for (let k = 0; k < 2; k++) {
+        const carMesh = makeCar(carColors[carIdx++ % carColors.length]);
+        const laneOffset = dir === 1 ? -3.1 : 3.1;
+        carMesh.position.set(ave + laneOffset, 0, -140 + k * 145 + (carIdx * 19) % 45);
+        carMesh.rotation.y = dir === 1 ? 0 : Math.PI;
+        worldGroup.add(carMesh);
+        trafficCars.push({
+          mesh: carMesh,
+          axis: 'z',
+          lanePos: ave + laneOffset,
+          dir,
+          speed: 9 + (carIdx % 5) * 1.8,
+          limit: 190,
+        });
+      }
+
+      // East-West cars
+      const carEW = makeCar(carColors[carIdx++ % carColors.length]);
+      const laneOffsetEW = dir === 1 ? 3.1 : -3.1;
+      carEW.position.set(-140 + (carIdx * 37) % 260, 0, ave + laneOffsetEW);
+      carEW.rotation.y = dir === 1 ? Math.PI * 0.5 : -Math.PI * 0.5;
+      worldGroup.add(carEW);
+      trafficCars.push({
+        mesh: carEW,
+        axis: 'x',
+        lanePos: ave + laneOffsetEW,
+        dir,
+        speed: 8.5 + (carIdx % 4) * 2.1,
+        limit: 190,
+      });
+    }
+  }
 }

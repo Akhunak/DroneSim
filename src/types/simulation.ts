@@ -1,3 +1,5 @@
+export type SceneId = 'mountain' | 'city';
+
 export type FlightMode = 'cine' | 'normal' | 'sport' | 'atti';
 
 export type WeatherPreset = 'clear' | 'windy' | 'rainy' | 'foggy' | 'stormy' | 'sunset';

@@ -1,24 +1,38 @@
 import * as THREE from 'three';
 import { Vec3, WeatherConfig } from '../types/simulation';
 
+export interface SkyUniforms extends Record<string, THREE.IUniform> {
+  uTopColor: { value: THREE.Color };
+  uHorizonColor: { value: THREE.Color };
+  uSunDir: { value: THREE.Vector3 };
+  uSunColor: { value: THREE.Color };
+  uFogColor: { value: THREE.Color };
+  uFlash: { value: number };
+}
+
 export interface WeatherVisuals {
   skyMesh: THREE.Mesh;
+  /** Shared sky shader: also rendered into the PMREM environment map for image-based lighting. */
+  skyMaterial: THREE.ShaderMaterial;
+  skyUniforms: SkyUniforms;
   update: (
     dt: number,
     weather: WeatherConfig,
     lightningFlash: number,
     focusPos: Vec3,
-    windVec: Vec3
+    windVec: Vec3,
+    fogColor: THREE.Color
   ) => void;
 }
 
 export function createWeatherVisuals(scene: THREE.Scene): WeatherVisuals {
   // 1. Dynamic Gradient Sky Dome with Sun Disc & Lightning Flash
-  const skyUniforms = {
+  const skyUniforms: SkyUniforms = {
     uTopColor: { value: new THREE.Color('#1d5fa8') },
     uHorizonColor: { value: new THREE.Color('#a8d5f5') },
     uSunDir: { value: new THREE.Vector3(0.4, 0.6, -0.5).normalize() },
     uSunColor: { value: new THREE.Color('#fff6e0') },
+    uFogColor: { value: new THREE.Color('#a8d5f5') },
     uFlash: { value: 0.0 },
   };
 
@@ -39,6 +53,7 @@ export function createWeatherVisuals(scene: THREE.Scene): WeatherVisuals {
       uniform vec3 uHorizonColor;
       uniform vec3 uSunDir;
       uniform vec3 uSunColor;
+      uniform vec3 uFogColor;
       uniform float uFlash;
       varying vec3 vWorldDirection;
 
@@ -51,9 +66,18 @@ export function createWeatherVisuals(scene: THREE.Scene): WeatherVisuals {
         col += uSunColor * pow(sunAmt, 16.0) * 0.25;
         col += uSunColor * pow(sunAmt, 360.0) * 1.1;
 
+        // Blend the horizon band (and everything below it) into the scene fog colour
+        // so distant fogged terrain melts seamlessly into the sky.
+        float horizonFog = 1.0 - smoothstep(-0.02, 0.14, dir.y);
+        col = mix(col, uFogColor, horizonFog);
+
         // Lightning flash illumination
         col = mix(col, vec3(0.88, 0.94, 1.0), uFlash * 0.72);
         gl_FragColor = vec4(col, 1.0);
+
+        // Match the renderer pipeline (ACES tone mapping + sRGB output) used by every other material
+        #include <tonemapping_fragment>
+        #include <colorspace_fragment>
       }
     `,
   });
@@ -153,7 +177,8 @@ export function createWeatherVisuals(scene: THREE.Scene): WeatherVisuals {
     weather: WeatherConfig,
     lightningFlash: number,
     focusPos: Vec3,
-    windVec: Vec3
+    windVec: Vec3,
+    fogColor: THREE.Color
   ) => {
     const smooth = Math.min(1, dt * 2.5);
 
@@ -167,6 +192,8 @@ export function createWeatherVisuals(scene: THREE.Scene): WeatherVisuals {
     skyUniforms.uTopColor.value.lerp(targetTop, smooth);
     skyUniforms.uHorizonColor.value.lerp(targetHor, smooth);
     skyUniforms.uSunColor.value.lerp(targetSun, smooth);
+    // Use the scene fog's already-smoothed colour so sky horizon and fogged terrain always agree
+    skyUniforms.uFogColor.value.copy(fogColor);
     skyUniforms.uFlash.value = lightningFlash;
 
     // Sun direction vector
@@ -265,5 +292,5 @@ export function createWeatherVisuals(scene: THREE.Scene): WeatherVisuals {
     }
   };
 
-  return { skyMesh, update };
+  return { skyMesh, skyMaterial: skyMat, skyUniforms, update };
 }

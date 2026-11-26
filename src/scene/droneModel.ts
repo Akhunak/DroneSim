@@ -186,7 +186,7 @@ export function createMini5ProModel(): DroneRig {
       const ledMat = new THREE.MeshStandardMaterial({
         color: 0xff3b30,
         emissive: 0xff3b30,
-        emissiveIntensity: 2.2,
+        emissiveIntensity: 5.0,
       });
       frontLedMats.push(ledMat);
       const led = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.006, 0.006), ledMat);
@@ -315,15 +315,15 @@ export function createMini5ProModel(): DroneRig {
       ledHex = 0xfacc15;
       blinkFreq = 3.0;
     }
-    const pulse = Math.sin(elapsed * blinkFreq * Math.PI) > -0.2 ? 2.8 : 0.25;
+    const pulse = Math.sin(elapsed * blinkFreq * Math.PI) > -0.2 ? 6.0 : 0.25;
     rearLedMat.color.setHex(ledHex);
     rearLedMat.emissive.setHex(ledHex);
     rearLedMat.emissiveIntensity = pulse;
 
-    // Ground shadow tracks terrain right beneath the drone
-    const groundY = getGroundOrWaterHeight(state.position.x, state.position.z);
-    groundShadow.position.set(state.position.x, groundY + 0.04, state.position.z);
-    const agl = Math.max(0, state.position.y - groundY);
+    // Ground / Rooftop shadow tracks effective support surface right beneath the drone
+    const agl = Math.max(0, state.altitudeAGL);
+    const supportY = state.position.y - agl - 0.045;
+    groundShadow.position.set(state.position.x, supportY, state.position.z);
     const shadowScale = 0.85 + Math.min(agl * 0.14, 3.2);
     groundShadow.scale.setScalar(shadowScale);
     const shadowMat = groundShadow.material as THREE.MeshBasicMaterial;

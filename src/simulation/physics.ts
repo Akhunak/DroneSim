@@ -6,11 +6,12 @@ import {
   FlightPhase,
   ObstacleSensorData,
   RCInput,
+  SceneId,
   Vec3,
   WorldObstacle,
 } from '../types/simulation';
 import { FLIGHT_MODES } from './modes';
-import { getGroundOrWaterHeight, getTerrainHeight, WATER_LEVEL } from './terrain';
+import { getActiveScene, getGroundOrWaterHeight, getTerrainHeight, WATER_LEVEL } from './terrain';
 import { WeatherEngine } from './weather';
 
 const GRAVITY = 9.81; // m/s^2
@@ -77,7 +78,7 @@ export class DronePhysicsEngine {
       flightPhase: 'GROUNDED',
       flightMode: 'normal',
       homePosition: { x: 0, y: homeY, z: 0 },
-      rthAltitude: 36,
+      rthAltitude: getActiveScene() === 'city' ? 102 : 36,
       altitudeAGL: 0,
       altitudeHome: 0,
       distanceFromHome: 0,
@@ -190,6 +191,41 @@ export class DronePhysicsEngine {
     this.phaseTimer = 0;
   }
 
+  public loadWorld(sceneId: SceneId, obstacles: WorldObstacle[], checkpoints: CheckpointRing[]): void {
+    this.obstacles = obstacles;
+    this.checkpoints = checkpoints;
+    const mode = this.state.flightMode;
+    this.state = this.createInitialState();
+    this.state.flightMode = mode;
+    this.state.rthAltitude = sceneId === 'city' ? 102 : 36;
+    this.phaseTimer = 0;
+  }
+
+  /**
+   * Computes effective landing surface below (x, z), including flat building rooftops when flying above them.
+   */
+  private getSupportSurfaceY(x: number, z: number, currentY: number): number {
+    let surfaceY = getGroundOrWaterHeight(x, z);
+    for (const obs of this.obstacles) {
+      if (obs.id.startsWith('tree-') || obs.id.startsWith('city-tree-') || obs.id.startsWith('turbine-') || obs.id === 'radio-mast') {
+        continue;
+      }
+      const topY = obs.y + obs.height;
+      // Only treat rooftop as floor if drone is already near or above the roofline
+      if (currentY < topY - 0.35) continue;
+      if (obs.type === 'box') {
+        if (Math.abs(x - obs.x) < obs.width * 0.5 && Math.abs(z - obs.z) < obs.depth * 0.5) {
+          surfaceY = Math.max(surfaceY, topY);
+        }
+      } else if (obs.type === 'cylinder') {
+        if (Math.hypot(x - obs.x, z - obs.z) < obs.width * 0.5) {
+          surfaceY = Math.max(surfaceY, topY);
+        }
+      }
+    }
+    return surfaceY;
+  }
+
   public step(dt: number, rawInput: RCInput): void {
     const clampedDt = Math.min(dt, 0.05);
     const s = this.state;
@@ -211,8 +247,8 @@ export class DronePhysicsEngine {
     s.windSpeedAtDrone = Math.hypot(wind.x, wind.z);
     s.windDirectionDeg = this.weather.getConfig().windDirectionDeg;
 
-    // Ground elevation directly below drone
-    const groundY = getGroundOrWaterHeight(s.position.x, s.position.z);
+    // Ground / Rooftop elevation directly below drone
+    const groundY = this.getSupportSurfaceY(s.position.x, s.position.z, s.position.y);
     const floorY = groundY + DRONE_GEAR_HEIGHT;
     s.altitudeAGL = Math.max(0, s.position.y - floorY);
     s.altitudeHome = s.position.y - s.homePosition.y;
@@ -634,13 +670,14 @@ export class DronePhysicsEngine {
       s.motorRPM[i] = lerp(s.motorRPM[i], targetRPM, dt * 12);
     }
 
-    // 9. Ground & Obstacle Collisions
-    const newFloorY = getGroundOrWaterHeight(s.position.x, s.position.z) + DRONE_GEAR_HEIGHT;
+    // 9. Ground, Rooftop & Obstacle Collisions
+    const newFloorY = this.getSupportSurfaceY(s.position.x, s.position.z, s.position.y) + DRONE_GEAR_HEIGHT;
     if (s.position.y <= newFloorY) {
       s.position.y = newFloorY;
-      // Prevent sinking into water — keep hovering slightly above water if over lake unless landing on land
+      // Prevent sinking into water — keep hovering slightly above water if over lake/canal
       const terrainH = getTerrainHeight(s.position.x, s.position.z);
-      if (terrainH < WATER_LEVEL) {
+      const onRooftop = newFloorY > WATER_LEVEL + 2.0;
+      if (!onRooftop && terrainH < WATER_LEVEL) {
         s.position.y = WATER_LEVEL + 0.35;
         s.velocity.y = Math.max(0.2, s.velocity.y);
       } else {
@@ -661,7 +698,8 @@ export class DronePhysicsEngine {
   private touchdown(floorY: number): boolean {
     const s = this.state;
     const terrainH = getTerrainHeight(s.position.x, s.position.z);
-    if (terrainH < WATER_LEVEL) {
+    const onRooftop = floorY > WATER_LEVEL + 2.0;
+    if (!onRooftop && terrainH < WATER_LEVEL) {
       // Safety: do not land on water! Switch back to hover
       s.flightPhase = 'FLYING';
       s.position.y = WATER_LEVEL + 0.8;
@@ -679,7 +717,8 @@ export class DronePhysicsEngine {
   private resolveObstacleCollisions(): void {
     const s = this.state;
     for (const obs of this.obstacles) {
-      if (s.position.y > obs.y + obs.height + DRONE_RADIUS || s.position.y < obs.y - 0.5) {
+      // Allow landing cleanly on flat rooftops when above the roof plane
+      if (s.position.y >= obs.y + obs.height - 0.15 || s.position.y < obs.y - 0.5) {
         continue;
       }
       if (obs.type === 'cylinder') {

@@ -3,6 +3,7 @@ import {
   DroneState,
   FlightMode,
   RCInput,
+  SceneId,
   WeatherConfig,
   WeatherPreset,
 } from '../types/simulation';
@@ -10,6 +11,8 @@ import { FLIGHT_MODE_ORDER, FLIGHT_MODES } from '../simulation/modes';
 import { getBeaufortScale, WEATHER_PRESET_ORDER, WEATHER_PRESETS } from '../simulation/weather';
 
 export interface HUDCallbacks {
+  onSelectScene: (sceneId: SceneId) => void;
+  onStartFlightFromModal: (sceneId: SceneId) => void;
   onSelectMode: (mode: FlightMode) => void;
   onSelectWeather: (preset: WeatherPreset) => void;
   onCustomWindChange: (speed: number, dirDeg: number) => void;
@@ -111,6 +114,9 @@ export class DroneHUD {
   private elShutterFlash!: HTMLElement;
   private elHelpOverlay!: HTMLElement;
   private elRechargeBtn!: HTMLButtonElement;
+  private elSceneModal!: HTMLElement;
+  private elSceneChipBtn!: HTMLButtonElement;
+  private sceneOptionCards!: NodeListOf<HTMLButtonElement>;
 
   private modeButtons!: NodeListOf<HTMLButtonElement>;
   private rcSwitchButtons!: NodeListOf<HTMLButtonElement>;
@@ -120,6 +126,8 @@ export class DroneHUD {
   private lastWarningSignature = '';
   private leftStickDragging = false;
   private rightStickDragging = false;
+  private selectedSceneId: SceneId = 'mountain';
+  public isSceneModalOpen = true;
 
   constructor(root: HTMLElement, callbacks: HUDCallbacks) {
     this.root = root;
@@ -169,6 +177,9 @@ export class DroneHUD {
             <span class="drone-title">DJI MINI 5 PRO</span>
           </div>
           <div class="status-pill" id="hud-status-pill">UÇUŞA HAZIR</div>
+          <button class="scene-chip-btn" id="btn-open-scenes" title="Uçuş Sahnesini Değiştir">
+            🏔️ Dağlık Arazi ▾
+          </button>
         </div>
 
         <div class="top-center">
@@ -454,6 +465,124 @@ export class DroneHUD {
           <button class="help-footer-btn" id="btn-start-fly">Uçuşa Dön</button>
         </div>
       </div>
+
+      <!-- STARTUP SCENE SELECTION POP-UP MODAL -->
+      <div class="scene-modal-overlay hud-interactive" id="scene-modal-overlay">
+        <div class="scene-modal-card">
+          <div class="scene-modal-header">
+            <div>
+              <div class="scene-modal-eyebrow">DJI MINI 5 PRO · UÇUŞ SİMÜLATÖRÜ</div>
+              <h1>Uçuş Sahnesi Seçin</h1>
+              <p class="scene-modal-sub">
+                Uçmak istediğiniz ortamı seçin; istediğiniz zaman üst menüden sahneyi değiştirebilirsiniz.
+              </p>
+            </div>
+          </div>
+
+          <div class="scene-cards-grid">
+            <!-- DAĞLIK ARAZİ -->
+            <button type="button" class="scene-option-card selected" data-scene="mountain">
+              <div class="scene-card-art">
+                <svg viewBox="0 0 320 130" preserveAspectRatio="xMidYMid slice">
+                  <defs>
+                    <linearGradient id="mSky" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#1d5fa8" />
+                      <stop offset="100%" stop-color="#93c5fd" />
+                    </linearGradient>
+                  </defs>
+                  <rect width="320" height="130" fill="url(#mSky)" />
+                  <circle cx="255" cy="34" r="14" fill="#fef08a" opacity="0.9" />
+                  <polygon points="0,110 68,42 135,110" fill="#3b5e4c" />
+                  <polygon points="95,112 182,28 268,112" fill="#2d4c3e" />
+                  <polygon points="158,51 182,28 206,51 193,47 182,53 171,47" fill="#e2e8f0" />
+                  <polygon points="210,115 278,52 320,92 320,115" fill="#355846" />
+                  <rect y="102" width="320" height="28" fill="#1e6c93" />
+                  <line x1="60" y1="74" x2="60" y2="48" stroke="#f8fafc" stroke-width="2" />
+                  <line x1="60" y1="48" x2="50" y2="40" stroke="#f8fafc" stroke-width="1.6" />
+                  <line x1="60" y1="48" x2="71" y2="42" stroke="#f8fafc" stroke-width="1.6" />
+                  <line x1="60" y1="48" x2="60" y2="60" stroke="#f8fafc" stroke-width="1.6" />
+                </svg>
+                <span class="scene-card-badge">Açık Alan · Kolay</span>
+                <span class="scene-check-badge">✓</span>
+              </div>
+              <div class="scene-card-body">
+                <div class="scene-card-title">🏔️ Dağlık Arazi</div>
+                <div class="scene-card-desc">
+                  Yüksek tepeler, göl kıyısı, dönen rüzgar türbinleri ve geniş görüş açılı vadi uçuşu.
+                </div>
+                <div class="scene-card-tags">
+                  <span class="scene-tag">Göl &amp; Vadi</span>
+                  <span class="scene-tag">Rüzgar Türbinleri</span>
+                  <span class="scene-tag">8 Uçuş Halkası</span>
+                </div>
+              </div>
+            </button>
+
+            <!-- ŞEHİR İÇİ -->
+            <button type="button" class="scene-option-card" data-scene="city">
+              <div class="scene-card-art">
+                <svg viewBox="0 0 320 130" preserveAspectRatio="xMidYMid slice">
+                  <defs>
+                    <linearGradient id="cSky" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#0f2544" />
+                      <stop offset="100%" stop-color="#38bdf8" />
+                    </linearGradient>
+                  </defs>
+                  <rect width="320" height="130" fill="url(#cSky)" />
+                  <rect x="18" y="48" width="34" height="62" fill="#1e293b" />
+                  <rect x="58" y="30" width="38" height="80" fill="#26384d" />
+                  <rect x="104" y="16" width="44" height="94" fill="#19334d" />
+                  <line x1="126" y1="16" x2="126" y2="4" stroke="#e2e8f0" stroke-width="2" />
+                  <circle cx="126" cy="4" r="2.2" fill="#ef4444" />
+                  <rect x="156" y="38" width="36" height="72" fill="#334155" />
+                  <rect x="200" y="24" width="40" height="86" fill="#1e3a5f" />
+                  <rect x="248" y="52" width="46" height="58" fill="#273449" />
+                  <!-- Lit city windows -->
+                  <g fill="#7dd3fc" opacity="0.85">
+                    <rect x="110" y="24" width="6" height="5" />
+                    <rect x="122" y="24" width="6" height="5" />
+                    <rect x="134" y="24" width="6" height="5" />
+                    <rect x="110" y="36" width="6" height="5" />
+                    <rect x="134" y="36" width="6" height="5" />
+                    <rect x="110" y="48" width="6" height="5" />
+                    <rect x="122" y="48" width="6" height="5" />
+                    <rect x="208" y="34" width="7" height="5" />
+                    <rect x="224" y="34" width="7" height="5" />
+                    <rect x="208" y="48" width="7" height="5" />
+                  </g>
+                  <g fill="#fde68a" opacity="0.8">
+                    <rect x="65" y="42" width="6" height="5" />
+                    <rect x="79" y="42" width="6" height="5" />
+                    <rect x="65" y="56" width="6" height="5" />
+                    <rect x="164" y="50" width="6" height="5" />
+                    <rect x="176" y="64" width="6" height="5" />
+                  </g>
+                  <rect y="106" width="320" height="24" fill="#1f2937" />
+                  <line x1="0" y1="118" x2="320" y2="118" stroke="#eab308" stroke-width="2" stroke-dasharray="14 10" />
+                </svg>
+                <span class="scene-card-badge">Metropol · Orta-Zor</span>
+                <span class="scene-check-badge">✓</span>
+              </div>
+              <div class="scene-card-body">
+                <div class="scene-card-title">🏙️ Şehir İçi</div>
+                <div class="scene-card-desc">
+                  Gökdelen koridorları, caddelerde akan trafik, şehir parkı ve binaların çatısına iniş imkânı.
+                </div>
+                <div class="scene-card-tags">
+                  <span class="scene-tag">Gökdelenler</span>
+                  <span class="scene-tag">Canlı Trafik</span>
+                  <span class="scene-tag">Çatıya İniş</span>
+                </div>
+              </div>
+            </button>
+          </div>
+
+          <div class="scene-modal-footer">
+            <span class="scene-modal-tip">💡 İpucu: Şehir içinde engel sensörü için <b>Normal</b>, hız için <b>Sport</b> modunu deneyin.</span>
+            <button type="button" class="scene-start-btn" id="btn-confirm-scene">Uçuşa Başla ▸</button>
+          </div>
+        </div>
+      </div>
     `;
   }
 
@@ -513,6 +642,9 @@ export class DroneHUD {
     this.elShutterFlash = q('#shutter-flash');
     this.elHelpOverlay = q('#help-overlay');
     this.elRechargeBtn = q('#btn-recharge');
+    this.elSceneModal = q('#scene-modal-overlay');
+    this.elSceneChipBtn = q('#btn-open-scenes');
+    this.sceneOptionCards = this.root.querySelectorAll('.scene-option-card');
 
     this.modeButtons = this.root.querySelectorAll('.mode-btn');
     this.rcSwitchButtons = this.root.querySelectorAll('.rc-hw-pos');
@@ -585,6 +717,34 @@ export class DroneHUD {
     this.elMuteBtn.addEventListener('click', () => this.cb.onToggleMute());
     this.root.querySelector('#btn-reset')!.addEventListener('click', () => this.cb.onResetDrone());
     this.elRechargeBtn.addEventListener('click', () => this.cb.onRechargeBattery());
+
+    // Scene Selection Pop-up Modal & Top Bar Switcher
+    this.elSceneChipBtn.addEventListener('click', () => {
+      this.openSceneModal();
+    });
+
+    this.sceneOptionCards.forEach((card) => {
+      card.addEventListener('click', () => {
+        const sceneId = card.dataset.scene as SceneId;
+        if (!sceneId) return;
+        this.selectedSceneId = sceneId;
+        this.syncSceneUI(sceneId);
+        this.cb.onSelectScene(sceneId);
+      });
+      card.addEventListener('dblclick', () => {
+        const sceneId = card.dataset.scene as SceneId;
+        if (!sceneId) return;
+        this.selectedSceneId = sceneId;
+        this.syncSceneUI(sceneId);
+        this.closeSceneModal();
+        this.cb.onStartFlightFromModal(sceneId);
+      });
+    });
+
+    this.root.querySelector('#btn-confirm-scene')!.addEventListener('click', () => {
+      this.closeSceneModal();
+      this.cb.onStartFlightFromModal(this.selectedSceneId);
+    });
 
     // Help modal
     this.root.querySelector('#btn-help')!.addEventListener('click', () => {
@@ -711,6 +871,25 @@ export class DroneHUD {
 
   public syncMuteUI(muted: boolean): void {
     this.elMuteBtn.textContent = muted ? '🔇' : '🔊';
+  }
+
+  public syncSceneUI(sceneId: SceneId): void {
+    this.selectedSceneId = sceneId;
+    this.sceneOptionCards.forEach((c) => {
+      c.classList.toggle('selected', c.dataset.scene === sceneId);
+    });
+    this.elSceneChipBtn.textContent =
+      sceneId === 'city' ? '🏙️ Şehir İçi ▾' : '🏔️ Dağlık Arazi ▾';
+  }
+
+  public openSceneModal(): void {
+    this.isSceneModalOpen = true;
+    this.elSceneModal.classList.remove('hidden');
+  }
+
+  public closeSceneModal(): void {
+    this.isSceneModalOpen = false;
+    this.elSceneModal.classList.add('hidden');
   }
 
   private updateWindLabels(speed: number, dirDeg: number): void {
