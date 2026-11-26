@@ -44,8 +44,14 @@ export class RCInputManager {
   private bindKeyboard(): void {
     window.addEventListener('keydown', (e) => {
       this.callbacks.onFirstInteraction();
-      // Ignore shortcuts if user is focused on an input range/slider
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      // Ignore flight keys only while typing into a text field. A focused slider or
+      // checkbox (e.g. after dragging the gimbal/wind slider) must not swallow W/S/arrow keys.
+      const target = e.target;
+      const isTextEntry =
+        target instanceof HTMLTextAreaElement ||
+        (target instanceof HTMLInputElement &&
+          !['range', 'checkbox', 'radio', 'button', 'submit', 'color'].includes(target.type));
+      if (isTextEntry) {
         return;
       }
 
@@ -140,11 +146,13 @@ export class RCInputManager {
     }
     this.gamepadConnected = foundGp;
 
-    // Combine sources (strongest magnitude wins smoothly)
+    // Combine sources: an actively used input always wins. Keyboard keys beat the gamepad
+    // so an idle controller with an off-centre axis can't silently override W/S.
     const pick = (a: number, b: number, c: number) => {
       if (Math.abs(b) > 0.02) return b; // Virtual touch/mouse joystick
+      if (a !== 0) return a; // Keyboard (pressed)
       if (Math.abs(c) > 0.02) return c; // Physical gamepad
-      return a; // Keyboard
+      return 0;
     };
 
     const rawThrottle = pick(kbThrottle, this.virtualLeft.y, gpThrottle);
