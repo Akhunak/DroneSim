@@ -13,9 +13,10 @@ import { getBeaufortScale, WEATHER_PRESET_ORDER, WEATHER_PRESETS } from '../simu
 
 export interface HUDCallbacks {
   onSelectScene: (sceneId: SceneId) => void;
-  onStartFlightFromModal: (sceneId: SceneId) => void;
-  /** Scene popup opened from the main menu was confirmed/closed: go back to the menu. */
+  /** Scene popup (opened from the main menu) was confirmed/closed: go back to the menu. */
   onSceneMenuDone: (sceneId: SceneId) => void;
+  /** Top-left "Menü" button: leave the flight and return to the main menu. */
+  onOpenMainMenu: () => void;
   onSelectMode: (mode: FlightMode) => void;
   onSelectWeather: (preset: WeatherPreset) => void;
   onCustomWindChange: (speed: number, dirDeg: number) => void;
@@ -128,7 +129,6 @@ export class DroneHUD {
   private elHelpOverlay!: HTMLElement;
   private elRechargeBtn!: HTMLButtonElement;
   private elSceneModal!: HTMLElement;
-  private elSceneChipBtn!: HTMLButtonElement;
   private elCrashModal!: HTMLElement;
   private elCrashReason!: HTMLElement;
   private elCrashStats!: HTMLElement;
@@ -145,8 +145,6 @@ export class DroneHUD {
   private rightStickDragging = false;
   private selectedSceneId: SceneId = 'mountain';
   public isSceneModalOpen = false;
-  /** Scene popup was opened from the main menu (confirm returns there instead of starting). */
-  private sceneModalFromMenu = false;
   private elSceneConfirmBtn!: HTMLButtonElement;
   public isCrashModalOpen = false;
 
@@ -198,14 +196,15 @@ export class DroneHUD {
       <!-- TOP BAR -->
       <header class="hud-top-bar">
         <div class="top-left hud-interactive">
+          <button type="button" class="hud-menu-btn" id="btn-main-menu" title="Ana menüye dön (Esc)">
+            <span class="hud-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span>
+            Menü
+          </button>
           <div class="brand-chip">
             <span class="mode-badge" id="hud-mode-badge">N</span>
             <span class="drone-title">DJI MINI 5 PRO</span>
           </div>
           <div class="status-pill" id="hud-status-pill">UÇUŞA HAZIR</div>
-          <button class="scene-chip-btn" id="btn-open-scenes" title="Uçuş Sahnesini Değiştir">
-            🏔️ Dağlık Arazi ▾
-          </button>
         </div>
 
         <div class="top-center">
@@ -492,7 +491,7 @@ export class DroneHUD {
         </div>
       </div>
 
-      <!-- SCENE SELECTION POP-UP MODAL (from main menu "Sahneler" or the top-bar scene chip) -->
+      <!-- SCENE SELECTION POP-UP MODAL (opened from the main menu "Sahneler") -->
       <div class="scene-modal-overlay hud-interactive hidden" id="scene-modal-overlay">
         <div class="scene-modal-card">
           <div class="scene-modal-header">
@@ -500,7 +499,7 @@ export class DroneHUD {
               <div class="scene-modal-eyebrow">DJI MINI 5 PRO · UÇUŞ SİMÜLATÖRÜ</div>
               <h1>Uçuş Sahnesi Seçin</h1>
               <p class="scene-modal-sub">
-                Uçmak istediğiniz ortamı seçin; istediğiniz zaman üst menüden sahneyi değiştirebilirsiniz.
+                Uçmak istediğiniz ortamı seçin; uçuşu ana menüdeki <b>Simülasyonu Başlat</b> ile başlatın.
               </p>
             </div>
           </div>
@@ -601,11 +600,68 @@ export class DroneHUD {
                 </div>
               </div>
             </button>
+
+            <!-- VADİ -->
+            <button type="button" class="scene-option-card" data-scene="valley">
+              <div class="scene-card-art">
+                <svg viewBox="0 0 320 130" preserveAspectRatio="xMidYMid slice">
+                  <defs>
+                    <linearGradient id="vSky" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#3b97d6" />
+                      <stop offset="100%" stop-color="#c3e8f7" />
+                    </linearGradient>
+                    <linearGradient id="vSea" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stop-color="#1b8fb0" />
+                      <stop offset="100%" stop-color="#3fd0d4" />
+                    </linearGradient>
+                  </defs>
+                  <rect width="320" height="130" fill="url(#vSky)" />
+                  <rect y="40" width="320" height="30" fill="url(#vSea)" />
+                  <polygon points="112,68 208,68 232,130 88,130" fill="#cbbd9c" />
+                  <polygon points="108,66 212,66 220,74 100,74" fill="#ece0bf" />
+                  <polygon points="0,130 0,30 30,26 64,38 92,54 112,68 88,130" fill="#cdbb9b" />
+                  <polygon points="0,130 0,64 36,78 70,96 88,130" fill="#a98f72" />
+                  <polygon points="320,130 320,28 290,26 256,38 228,54 208,68 232,130" fill="#c6b393" />
+                  <polygon points="320,130 320,66 284,82 252,100 232,130" fill="#9f8668" />
+                  <g stroke="#a38c70" stroke-width="1.4" opacity="0.8">
+                    <line x1="8" y1="46" x2="92" y2="56" />
+                    <line x1="14" y1="58" x2="100" y2="74" />
+                    <line x1="312" y1="44" x2="232" y2="58" />
+                    <line x1="306" y1="56" x2="222" y2="76" />
+                  </g>
+                  <line x1="84" y1="50" x2="236" y2="50" stroke="#f1f5f9" stroke-width="3" />
+                  <line x1="136" y1="51" x2="136" y2="67" stroke="#e2e8f0" stroke-width="2" />
+                  <line x1="184" y1="51" x2="184" y2="67" stroke="#e2e8f0" stroke-width="2" />
+                  <g fill="#2f5a2a">
+                    <ellipse cx="14" cy="24" rx="9" ry="5" />
+                    <ellipse cx="34" cy="20" rx="8" ry="4.5" />
+                    <ellipse cx="58" cy="27" rx="7" ry="4" />
+                    <ellipse cx="300" cy="20" rx="9" ry="5" />
+                    <ellipse cx="276" cy="23" rx="7" ry="4" />
+                    <ellipse cx="150" cy="104" rx="7" ry="4" />
+                    <ellipse cx="174" cy="114" rx="8" ry="4.5" />
+                  </g>
+                </svg>
+                <span class="scene-card-badge">Kanyon · Orta</span>
+                <span class="scene-check-badge">✓</span>
+              </div>
+              <div class="scene-card-body">
+                <div class="scene-card-title">🏞️ Vadi</div>
+                <div class="scene-card-desc">
+                  Kaputaş'ı andıran derin kanyon: uçurum kenarından kalkış, çam koruları, köprü altı ve turkuaz koy.
+                </div>
+                <div class="scene-card-tags">
+                  <span class="scene-tag">Kanyon Duvarları</span>
+                  <span class="scene-tag">Deniz Manzarası</span>
+                  <span class="scene-tag">8 Uçuş Halkası</span>
+                </div>
+              </div>
+            </button>
           </div>
 
           <div class="scene-modal-footer">
-            <span class="scene-modal-tip">💡 İpucu: Şehir içinde engel sensörü için <b>Normal</b>, hız için <b>Sport</b> modunu deneyin.</span>
-            <button type="button" class="scene-start-btn" id="btn-confirm-scene">Uçuşa Başla ▸</button>
+            <span class="scene-modal-tip">💡 İpucu: Kanyonda dar geçişler için <b>Cine</b>, şehirde engel sensörü için <b>Normal</b> modu deneyin.</span>
+            <button type="button" class="scene-start-btn" id="btn-confirm-scene">Sahneyi Seç ✓</button>
           </div>
         </div>
       </div>
@@ -684,7 +740,6 @@ export class DroneHUD {
     this.elCrashReason = q('#crash-modal-reason');
     this.elCrashStats = q('#crash-modal-stats');
     this.elCrashOkBtn = q<HTMLButtonElement>('#btn-crash-ok');
-    this.elSceneChipBtn = q('#btn-open-scenes');
     this.sceneOptionCards = this.root.querySelectorAll('.scene-option-card');
 
     this.modeButtons = this.root.querySelectorAll('.mode-btn');
@@ -759,10 +814,10 @@ export class DroneHUD {
     this.root.querySelector('#btn-reset')!.addEventListener('click', () => this.cb.onResetDrone());
     this.elRechargeBtn.addEventListener('click', () => this.cb.onRechargeBattery());
 
-    // Scene Selection Pop-up Modal & Top Bar Switcher
-    this.elSceneChipBtn.addEventListener('click', () => {
-      this.openSceneModal();
-    });
+    // Top-left "Menü" button -> main menu
+    this.root.querySelector('#btn-main-menu')!.addEventListener('click', () => this.cb.onOpenMainMenu());
+
+    // Scene Selection Pop-up Modal
 
     this.sceneOptionCards.forEach((card) => {
       card.addEventListener('click', () => {
@@ -784,10 +839,10 @@ export class DroneHUD {
     this.elSceneConfirmBtn.addEventListener('click', () => this.confirmSceneModal());
     // Clicking the dimmed backdrop or pressing Esc goes back to the menu
     this.elSceneModal.addEventListener('click', (e) => {
-      if (e.target === this.elSceneModal && this.sceneModalFromMenu) this.confirmSceneModal();
+      if (e.target === this.elSceneModal) this.confirmSceneModal();
     });
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Escape' && this.isSceneModalOpen && this.sceneModalFromMenu) {
+      if (e.code === 'Escape' && this.isSceneModalOpen) {
         e.preventDefault();
         this.confirmSceneModal();
       }
@@ -806,6 +861,13 @@ export class DroneHUD {
     const closeHelp = () => this.elHelpOverlay.classList.add('hidden');
     this.root.querySelector('#btn-close-help')!.addEventListener('click', closeHelp);
     this.root.querySelector('#btn-start-fly')!.addEventListener('click', closeHelp);
+    window.addEventListener('keydown', (e) => {
+      // Esc closes the help sheet first (main.ts skips handled events)
+      if (e.code === 'Escape' && !this.elHelpOverlay.classList.contains('hidden')) {
+        e.preventDefault();
+        closeHelp();
+      }
+    });
     this.elHelpOverlay.addEventListener('click', (e) => {
       if (e.target === this.elHelpOverlay) closeHelp();
     });
@@ -931,14 +993,9 @@ export class DroneHUD {
     this.sceneOptionCards.forEach((c) => {
       c.classList.toggle('selected', c.dataset.scene === sceneId);
     });
-    this.elSceneChipBtn.textContent =
-      sceneId === 'city' ? '🏙️ Şehir İçi ▾' : '🏔️ Dağlık Arazi ▾';
   }
 
-  /** @param fromMenu opened from the main menu: confirming returns to the menu instead of starting. */
-  public openSceneModal(fromMenu = false): void {
-    this.sceneModalFromMenu = fromMenu;
-    this.elSceneConfirmBtn.textContent = fromMenu ? 'Sahneyi Seç ✓' : 'Uçuşa Başla ▸';
+  public openSceneModal(): void {
     this.isSceneModalOpen = true;
     this.elSceneModal.classList.remove('hidden');
     this.root
@@ -948,8 +1005,7 @@ export class DroneHUD {
 
   private confirmSceneModal(): void {
     this.closeSceneModal();
-    if (this.sceneModalFromMenu) this.cb.onSceneMenuDone(this.selectedSceneId);
-    else this.cb.onStartFlightFromModal(this.selectedSceneId);
+    this.cb.onSceneMenuDone(this.selectedSceneId);
   }
 
   public closeSceneModal(): void {

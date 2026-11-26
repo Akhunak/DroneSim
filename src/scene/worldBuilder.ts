@@ -3,9 +3,17 @@ import { CheckpointRing, SceneId, WorldObstacle } from '../types/simulation';
 import {
   getTerrainHeight,
   HOME_PAD_RADIUS,
+  sampleValley,
+  VALLEY_MOUTH_Z,
   WATER_LEVEL,
   WORLD_SIZE,
 } from '../simulation/terrain';
+
+const RING_COLORS: Record<SceneId, { color: number; emissive: number }> = {
+  mountain: { color: 0x38bdf8, emissive: 0x0ea5e9 },
+  city: { color: 0xf59e0b, emissive: 0xd97706 },
+  valley: { color: 0xfb923c, emissive: 0xea580c },
+};
 
 interface TrafficCar {
   mesh: THREE.Group;
@@ -264,18 +272,23 @@ export function buildWorld(
   const treeGroups: THREE.Group[] = [];
   const trafficCars: TrafficCar[] = [];
 
-  // Shared Water Plane (Lake in Mountain, River Canal in City)
-  const waterGeom = new THREE.PlaneGeometry(WORLD_SIZE * 0.96, WORLD_SIZE * 0.96, 24, 24);
+  // Shared Water Plane (Lake in Mountain, River Canal in City, open sea to the horizon in Valley)
+  const isValley = sceneId === 'valley';
+  const waterGeom = isValley
+    ? new THREE.PlaneGeometry(3200, 2000, 32, 20)
+    : new THREE.PlaneGeometry(WORLD_SIZE * 0.96, WORLD_SIZE * 0.96, 24, 24);
   waterGeom.rotateX(-Math.PI / 2);
   const waterMat = new THREE.MeshStandardMaterial({
-    color: sceneId === 'city' ? 0x165373 : 0x1e6c93,
-    roughness: 0.16,
-    metalness: 0.48,
+    color: sceneId === 'city' ? 0x165373 : isValley ? 0x1fb0bf : 0x1e6c93,
+    roughness: isValley ? 0.1 : 0.16,
+    metalness: isValley ? 0.3 : 0.48,
     transparent: true,
-    opacity: 0.9,
+    opacity: isValley ? 0.86 : 0.9,
   });
   const waterMesh = new THREE.Mesh(waterGeom, waterMat);
   waterMesh.position.y = WATER_LEVEL;
+  // Valley sea starts under the coast and stretches north to the horizon
+  if (isValley) waterMesh.position.z = -360 - 1000;
   waterMesh.receiveShadow = true;
   worldGroup.add(waterMesh);
 
@@ -287,6 +300,8 @@ export function buildWorld(
 
   if (sceneId === 'mountain') {
     buildMountainWorld(worldGroup, obstacles, turbineRotors, beaconLights, treeGroups);
+  } else if (sceneId === 'valley') {
+    buildValleyWorld(worldGroup, obstacles, beaconLights);
   } else {
     buildCityWorld(worldGroup, obstacles, beaconLights, treeGroups, trafficCars, maxAnisotropy);
   }
@@ -295,8 +310,8 @@ export function buildWorld(
   const checkpointMeshes = new Map<number, { ring: THREE.Mesh; mat: THREE.MeshStandardMaterial }>();
   for (const cp of checkpoints) {
     const mat = new THREE.MeshStandardMaterial({
-      color: sceneId === 'city' ? 0xf59e0b : 0x38bdf8,
-      emissive: sceneId === 'city' ? 0xd97706 : 0x0284c7,
+      color: RING_COLORS[sceneId].color,
+      emissive: RING_COLORS[sceneId].emissive,
       emissiveIntensity: 2.2,
       roughness: 0.25,
       metalness: 0.4,
@@ -367,8 +382,8 @@ export function buildWorld(
     }
 
     // Checkpoints
-    const baseHex = sceneId === 'city' ? 0xf59e0b : 0x38bdf8;
-    const baseEmissive = sceneId === 'city' ? 0xd97706 : 0x0ea5e9;
+    const baseHex = RING_COLORS[sceneId].color;
+    const baseEmissive = RING_COLORS[sceneId].emissive;
     for (const cp of cps) {
       const entry = checkpointMeshes.get(cp.id);
       if (!entry) continue;
@@ -989,4 +1004,225 @@ function buildCityWorld(
       });
     }
   }
+}
+
+/**
+ * Kaputaş-style gorge: limestone walls with strata, scrubby plateau, gravel floor,
+ * pebble cove, coast-road bridge and instanced red-pine woods.
+ */
+function buildValleyWorld(
+  worldGroup: THREE.Group,
+  obstacles: WorldObstacle[],
+  beaconLights: THREE.MeshStandardMaterial[]
+): void {
+  // Terrain mesh: wider than the flight corridor so the rims and hills fill the view
+  const sizeX = 860;
+  const sizeZ = 980;
+  const centerZ = -110;
+  const cell = 3.4;
+  const terrainGeom = new THREE.PlaneGeometry(sizeX, sizeZ, Math.round(sizeX / cell), Math.round(sizeZ / cell));
+  terrainGeom.rotateX(-Math.PI / 2);
+  terrainGeom.translate(0, 0, centerZ);
+
+  const posAttr = terrainGeom.attributes.position;
+  const colors = new Float32Array(posAttr.count * 3);
+  const c = new THREE.Color();
+  const rockLight = new THREE.Color(0xd2c3a6);
+  const rockDark = new THREE.Color(0xa38c70);
+  const rockRed = new THREE.Color(0xb87a58);
+  const scrub = new THREE.Color(0x5a7236);
+  const scrubDry = new THREE.Color(0x8c8a56);
+  const gravel = new THREE.Color(0xbdb3a0);
+  const sand = new THREE.Color(0xe4d6b4);
+  const seabed = new THREE.Color(0xd8d0b0);
+  const padStone = new THREE.Color(0x8a8f96);
+
+  for (let i = 0; i < posAttr.count; i++) {
+    const x = posAttr.getX(i);
+    const z = posAttr.getZ(i);
+    const y = getTerrainHeight(x, z, 'valley');
+    posAttr.setY(i, y);
+
+    const slope =
+      Math.hypot(
+        getTerrainHeight(x + 1.2, z, 'valley') - getTerrainHeight(x - 1.2, z, 'valley'),
+        getTerrainHeight(x, z + 1.2, 'valley') - getTerrainHeight(x, z - 1.2, 'valley')
+      ) / 2.4;
+    const v = sampleValley(x, z);
+    const noise = (Math.sin(x * 0.11 + z * 0.07) * Math.cos(z * 0.13 - x * 0.05) + 1) * 0.5;
+
+    if (Math.hypot(x, z) < HOME_PAD_RADIUS + 2.5) {
+      c.copy(padStone);
+    } else if (y < WATER_LEVEL - 0.2) {
+      c.copy(seabed).lerp(rockDark, Math.min(1, slope * 0.6));
+    } else if (y < 2.4 && z < VALLEY_MOUTH_Z + 25) {
+      c.copy(sand).lerp(gravel, noise * 0.35);
+    } else if (slope > 0.85) {
+      // Limestone walls with horizontal strata and rusty iron streaks
+      const strata = (Math.sin(y * 0.55) + Math.sin(y * 1.7 + x * 0.02) * 0.4 + 1.4) / 2.8;
+      c.copy(rockLight).lerp(rockDark, strata * 0.75);
+      c.lerp(rockRed, Math.max(0, Math.sin(x * 0.09 + z * 0.05) - 0.55) * 0.9);
+    } else if (v.dist < v.floorHalf + 3) {
+      // Gorge floor: dry gravel creek bed with green patches
+      c.copy(gravel).lerp(scrub, smoothNoise(x, z) * 0.55);
+    } else {
+      c.copy(scrub).lerp(scrubDry, noise * 0.7);
+      // Rocky outcrops showing through on moderate slopes
+      c.lerp(rockLight, Math.min(1, Math.max(0, (slope - 0.45) / 0.4)) * 0.8);
+    }
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  terrainGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  terrainGeom.computeVertexNormals();
+  const terrainMesh = new THREE.Mesh(
+    terrainGeom,
+    new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.94, metalness: 0.0 })
+  );
+  terrainMesh.receiveShadow = true;
+  terrainMesh.castShadow = true;
+  worldGroup.add(terrainMesh);
+
+  const concreteMat = new THREE.MeshStandardMaterial({ color: 0xd9d4ca, roughness: 0.82 });
+  const asphaltMat = new THREE.MeshStandardMaterial({ color: 0x3a3d42, roughness: 0.9 });
+  const railMat = new THREE.MeshStandardMaterial({ color: 0xe5e7eb, roughness: 0.5, metalness: 0.4 });
+  const boulderMat = new THREE.MeshStandardMaterial({ color: 0xc4b59a, roughness: 0.95, flatShading: true });
+
+  // Instanced red-pine woods: trunk + two foliage tiers, per-tree tint
+  const trees = obstacles.filter((o) => o.id.startsWith('tree-'));
+  const trunkMesh = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.22, 0.38, 1, 6),
+    new THREE.MeshStandardMaterial({ color: 0x6b4a35, roughness: 0.9 }),
+    trees.length
+  );
+  const crownGeo = new THREE.IcosahedronGeometry(1, 1);
+  const crownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, flatShading: true });
+  const crownLow = new THREE.InstancedMesh(crownGeo, crownMat, trees.length);
+  const crownTop = new THREE.InstancedMesh(crownGeo, crownMat, trees.length);
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const sc = new THREE.Vector3();
+  const pos = new THREE.Vector3();
+  const tint = new THREE.Color();
+  trees.forEach((t, i) => {
+    const r = t.width * 0.5;
+    const trunkH = t.height * 0.55;
+    q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), (t.x * 13.1 + t.z * 7.7) % (Math.PI * 2));
+    m.compose(pos.set(t.x, t.y + trunkH * 0.5, t.z), q, sc.set(1, trunkH, 1));
+    trunkMesh.setMatrixAt(i, m);
+    // Umbrella-like Mediterranean pine crown: broad flat lower mass, smaller cap on top
+    m.compose(pos.set(t.x, t.y + t.height * 0.68, t.z), q, sc.set(r * 1.15, t.height * 0.2, r * 1.15));
+    crownLow.setMatrixAt(i, m);
+    m.compose(pos.set(t.x + r * 0.2, t.y + t.height * 0.86, t.z - r * 0.15), q, sc.set(r * 0.75, t.height * 0.13, r * 0.75));
+    crownTop.setMatrixAt(i, m);
+    const k = ((Math.sin(t.x * 1.7) + Math.cos(t.z * 2.3)) * 0.25 + 0.5);
+    tint.setHex(0x2f5a2a).lerp(new THREE.Color(0x4d6e2f), k);
+    crownLow.setColorAt(i, tint);
+    crownTop.setColorAt(i, tint.multiplyScalar(1.12));
+  });
+  for (const im of [trunkMesh, crownLow, crownTop]) {
+    im.castShadow = true;
+    im.receiveShadow = true;
+    im.instanceMatrix.needsUpdate = true;
+    if (im.instanceColor) im.instanceColor.needsUpdate = true;
+    worldGroup.add(im);
+  }
+
+  // Low macchia shrubs (visual only) on the plateau and gorge floor
+  let seed = 7331;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+  const shrubPositions: THREE.Vector3[] = [];
+  for (let i = 0; i < 900 && shrubPositions.length < 520; i++) {
+    const x = (rand() - 0.5) * 520;
+    const z = 120 - rand() * 560;
+    const y = getTerrainHeight(x, z, 'valley');
+    if (y < 1.2 || Math.hypot(x, z) < 14) continue;
+    const sl = Math.abs(getTerrainHeight(x + 1, z, 'valley') - y) + Math.abs(getTerrainHeight(x, z + 1, 'valley') - y);
+    if (sl > 0.7) continue;
+    shrubPositions.push(new THREE.Vector3(x, y, z));
+  }
+  const shrubs = new THREE.InstancedMesh(
+    new THREE.IcosahedronGeometry(1, 0),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, flatShading: true }),
+    shrubPositions.length
+  );
+  shrubPositions.forEach((p, i) => {
+    const s = 0.6 + rand() * 0.9;
+    m.compose(pos.set(p.x, p.y + s * 0.3, p.z), q.identity(), sc.set(s * 1.3, s * 0.7, s * 1.2));
+    shrubs.setMatrixAt(i, m);
+    shrubs.setColorAt(i, tint.setHex(0x4f6a2e).lerp(new THREE.Color(0x7c7d45), rand()));
+  });
+  shrubs.receiveShadow = true;
+  shrubs.instanceMatrix.needsUpdate = true;
+  if (shrubs.instanceColor) shrubs.instanceColor.needsUpdate = true;
+  worldGroup.add(shrubs);
+
+  for (const obs of obstacles) {
+    if (obs.id === 'valley-bridge') {
+      const g = new THREE.Group();
+      g.position.set(obs.x, obs.y, obs.z);
+      const deck = new THREE.Mesh(new THREE.BoxGeometry(obs.width, obs.height, obs.depth), concreteMat);
+      deck.position.y = obs.height * 0.5;
+      deck.castShadow = true;
+      deck.receiveShadow = true;
+      g.add(deck);
+      const road = new THREE.Mesh(new THREE.BoxGeometry(obs.width, 0.08, obs.depth - 1.6), asphaltMat);
+      road.position.y = obs.height + 0.04;
+      g.add(road);
+      for (const side of [-1, 1]) {
+        const rail = new THREE.Mesh(new THREE.BoxGeometry(obs.width, 0.9, 0.18), railMat);
+        rail.position.set(0, obs.height + 0.45, side * (obs.depth * 0.5 - 0.15));
+        rail.castShadow = true;
+        g.add(rail);
+      }
+      // Red/white warning lights at mid-span (aviation marker for low flights)
+      const lightMat = new THREE.MeshStandardMaterial({ color: 0xff2d2d, emissive: 0xff2d2d, emissiveIntensity: 2.5 });
+      beaconLights.push(lightMat);
+      const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 8), lightMat);
+      bulb.position.set(0, -0.2, -obs.depth * 0.5);
+      g.add(bulb);
+      worldGroup.add(g);
+    } else if (obs.id.startsWith('bridge-pier-')) {
+      const pier = new THREE.Mesh(new THREE.CylinderGeometry(obs.width * 0.45, obs.width * 0.55, obs.height, 14), concreteMat);
+      pier.position.set(obs.x, obs.y + obs.height * 0.5, obs.z);
+      pier.castShadow = true;
+      pier.receiveShadow = true;
+      worldGroup.add(pier);
+    } else if (obs.id.startsWith('boulder-')) {
+      const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.5, 0), boulderMat);
+      rock.position.set(obs.x, obs.y + obs.height * 0.45, obs.z);
+      rock.scale.set(obs.width, obs.height, obs.depth * 0.9);
+      rock.rotation.set(obs.x % 1, obs.z % 3, 0);
+      rock.castShadow = true;
+      rock.receiveShadow = true;
+      worldGroup.add(rock);
+    } else if (obs.id.startsWith('umbrella-')) {
+      const g = new THREE.Group();
+      g.position.set(obs.x, obs.y, obs.z);
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, obs.height, 6), railMat);
+      pole.position.y = obs.height * 0.5;
+      g.add(pole);
+      const canopyMat = new THREE.MeshStandardMaterial({
+        color: Math.abs(Math.round(obs.x * 7)) % 2 === 0 ? 0xf97316 : 0x0ea5e9,
+        roughness: 0.7,
+        side: THREE.DoubleSide,
+      });
+      const canopy = new THREE.Mesh(new THREE.ConeGeometry(obs.width * 0.5, 0.6, 10, 1, true), canopyMat);
+      canopy.position.y = obs.height - 0.2;
+      canopy.castShadow = true;
+      g.add(canopy);
+      worldGroup.add(g);
+    }
+  }
+}
+
+/** Cheap smooth value noise in [0, 1] for colour variation. */
+function smoothNoise(x: number, z: number): number {
+  return (
+    (Math.sin(x * 0.09 + Math.cos(z * 0.05) * 2) * Math.cos(z * 0.08 + Math.sin(x * 0.04) * 2) + 1) * 0.5
+  );
 }

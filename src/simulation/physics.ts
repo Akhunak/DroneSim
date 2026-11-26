@@ -12,7 +12,13 @@ import {
   WorldObstacle,
 } from '../types/simulation';
 import { FLIGHT_MODES } from './modes';
-import { getActiveScene, getGroundOrWaterHeight, getTerrainHeight, WATER_LEVEL } from './terrain';
+import {
+  clampToFlightArea,
+  getGroundOrWaterHeight,
+  getRthAltitude,
+  getTerrainHeight,
+  WATER_LEVEL,
+} from './terrain';
 import { WeatherEngine } from './weather';
 
 const GRAVITY = 9.81; // m/s^2
@@ -84,7 +90,7 @@ export class DronePhysicsEngine {
       flightPhase: 'GROUNDED',
       flightMode: 'normal',
       homePosition: { x: 0, y: homeY, z: 0 },
-      rthAltitude: getActiveScene() === 'city' ? 102 : 36,
+      rthAltitude: getRthAltitude(),
       altitudeAGL: 0,
       altitudeHome: 0,
       distanceFromHome: 0,
@@ -308,7 +314,7 @@ export class DronePhysicsEngine {
     const mode = this.state.flightMode;
     this.state = this.createInitialState();
     this.state.flightMode = mode;
-    this.state.rthAltitude = sceneId === 'city' ? 102 : 36;
+    this.state.rthAltitude = getRthAltitude(sceneId);
     this.phaseTimer = 0;
   }
 
@@ -318,7 +324,13 @@ export class DronePhysicsEngine {
   private getSupportSurfaceY(x: number, z: number, currentY: number): number {
     let surfaceY = getGroundOrWaterHeight(x, z);
     for (const obs of this.obstacles) {
-      if (obs.id.startsWith('tree-') || obs.id.startsWith('city-tree-') || obs.id.startsWith('turbine-') || obs.id === 'radio-mast') {
+      if (
+        obs.id.startsWith('tree-') ||
+        obs.id.startsWith('city-tree-') ||
+        obs.id.startsWith('turbine-') ||
+        obs.id.startsWith('umbrella-') ||
+        obs.id === 'radio-mast'
+      ) {
         continue;
       }
       const topY = obs.y + obs.height;
@@ -728,13 +740,8 @@ export class DronePhysicsEngine {
     s.position.y += s.velocity.y * dt;
     s.position.z += s.velocity.z * dt;
 
-    // Geofence soft boundary
-    const maxRadius = 310;
-    const distCenter = Math.hypot(s.position.x, s.position.z);
-    if (distCenter > maxRadius) {
-      s.position.x = (s.position.x / distCenter) * maxRadius;
-      s.position.z = (s.position.z / distCenter) * maxRadius;
-    }
+    // Geofence soft boundary (circle around home, or the valley's corridor)
+    clampToFlightArea(s.position);
 
     // 7. Compute realistic visual Pitch & Roll from thrust vector!
     // In a real quadcopter, horizontal acceleration comes from tilting the thrust vector.
@@ -789,6 +796,14 @@ export class DronePhysicsEngine {
 
     // 9. Ground, Rooftop & Obstacle Collisions
     const newFloorY = this.getSupportSurfaceY(s.position.x, s.position.z, s.position.y) + DRONE_GEAR_HEIGHT;
+    // Flying into a steep slope (cliff wall, hillside steeper than ~45°) is a crash, not a ramp
+    const climb = newFloorY - s.position.y;
+    const stepDist = Math.hypot(s.velocity.x, s.velocity.z) * dt;
+    if (climb > 0.3 && climb > stepDist && stepDist > 0.03) {
+      s.position.y = newFloorY;
+      this.triggerCrash('obstacle');
+      return;
+    }
     if (s.position.y <= newFloorY) {
       s.position.y = newFloorY;
       // Touching the lake / canal surface downs the drone

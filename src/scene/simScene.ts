@@ -14,7 +14,7 @@ import {
 import { createMini5ProModel, DroneRig } from './droneModel';
 import { buildWorld, WorldHandles } from './worldBuilder';
 import { createWeatherVisuals, WeatherVisuals } from './weatherVisuals';
-import { WORLD_SIZE } from '../simulation/terrain';
+import { getTerrainHeight, WORLD_SIZE } from '../simulation/terrain';
 
 const CAMERA_FAR = 900;
 const SHADOW_MAP_SIZE = 2048;
@@ -75,6 +75,8 @@ export class SimScene {
   private chasePos = new THREE.Vector3(0, 2.2, 4.5);
   private chaseLook = new THREE.Vector3(0, 0.6, 0);
 
+  /** Ground height of the home pad (the valley pad sits on a 46 m plateau). */
+  private homeY = 0;
   /** Main-menu backdrop: slow cinematic orbit around the parked drone instead of the flight camera. */
   private showcase = false;
   private showcaseAngle = 0.9;
@@ -118,6 +120,7 @@ export class SimScene {
     obstacles: WorldObstacle[],
     checkpoints: CheckpointRing[]
   ) {
+    this.homeY = getTerrainHeight(0, 0, sceneId);
     this.renderer = new THREE.WebGLRenderer({
       canvas,
       // MSAA is done on the composer's HDR render target instead (see setupPostProcessing)
@@ -171,6 +174,7 @@ export class SimScene {
     this.scene.add(this.droneRig.root);
     this.scene.add(this.droneRig.groundShadow);
     this.weatherVisuals = createWeatherVisuals(this.scene);
+    this.weatherVisuals.setCloudBase(this.homeY);
 
     // Image-based lighting from the procedural sky
     this.pmrem = new THREE.PMREMGenerator(this.renderer);
@@ -276,6 +280,8 @@ export class SimScene {
   ): void {
     this.world.dispose();
     this.world = buildWorld(this.scene, sceneId, obstacles, checkpoints, this.maxAnisotropy);
+    this.homeY = getTerrainHeight(0, 0, sceneId);
+    this.weatherVisuals.setCloudBase(this.homeY);
     this.resetCamera();
   }
 
@@ -286,8 +292,8 @@ export class SimScene {
 
   /** Snap the chase camera back behind the home pad (after a reset) instead of swooping there. */
   public resetCamera(): void {
-    this.chasePos.set(0, 2.2, 4.5);
-    this.chaseLook.set(0, 0.6, 0);
+    this.chasePos.set(0, this.homeY + 2.2, 4.5);
+    this.chaseLook.set(0, this.homeY + 0.6, 0);
   }
 
   private bindEvents(canvas: HTMLCanvasElement): void {
@@ -496,7 +502,7 @@ export class SimScene {
       this.camera.lookAt(this.chaseLook);
     } else if (this.cameraMode === 'los') {
       // Ground Pilot Line-of-Sight view (standing next to the Home Helipad)
-      this.camera.position.set(0, 1.85, 8.8);
+      this.camera.position.set(0, this.homeY + 1.85, 8.8);
       this.tmpTarget.set(pos.x, pos.y + 0.1, pos.z);
       this.camera.lookAt(this.tmpTarget);
     } else if (this.cameraMode === 'orbit') {

@@ -93,6 +93,16 @@ function bootstrap(): void {
     menu.open();
   };
 
+  /** Leave the current flight (drone back on the pad) and show the main menu. */
+  const returnToMainMenu = () => {
+    if (menu.isOpen) return;
+    physics.resetToHome();
+    simScene.resetCamera();
+    hud.syncModeUI(physics.state.flightMode);
+    audio.playTone('mode');
+    openMainMenu();
+  };
+
   const startSimulation = () => {
     audio.unlock();
     menu.close();
@@ -151,11 +161,7 @@ function bootstrap(): void {
       audio.playTone('mode');
       applyScene(sceneId);
     },
-    onStartFlightFromModal: (sceneId) => {
-      audio.unlock();
-      applyScene(sceneId);
-      audio.playTone('takeoff');
-    },
+    onOpenMainMenu: () => returnToMainMenu(),
     onSceneMenuDone: (sceneId) => {
       applyScene(sceneId);
       menu.focusItem('start');
@@ -206,7 +212,7 @@ function bootstrap(): void {
     onStart: startSimulation,
     onOpenScenes: () => {
       audio.playTone('mode');
-      hud.openSceneModal(true);
+      hud.openSceneModal();
     },
     onSelectWeather: setWeather,
     onSelectMode: setMode,
@@ -214,6 +220,13 @@ function bootstrap(): void {
     onToggleMute: toggleMute,
     onFirstInteraction: () => audio.unlock(),
     isCovered: () => hud.isModalOpen,
+  });
+
+  // Esc during the flight -> main menu (popups/help handle their own Esc first)
+  window.addEventListener('keydown', (e) => {
+    if (e.code !== 'Escape' || e.defaultPrevented || menu.isOpen || hud.isModalOpen) return;
+    e.preventDefault();
+    returnToMainMenu();
   });
 
   // Sync initial UI state

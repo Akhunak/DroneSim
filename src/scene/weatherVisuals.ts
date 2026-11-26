@@ -15,6 +15,8 @@ export interface WeatherVisuals {
   /** Shared sky shader: also rendered into the PMREM environment map for image-based lighting. */
   skyMaterial: THREE.ShaderMaterial;
   skyUniforms: SkyUniforms;
+  /** Lifts the cloud layer with the scene's ground level (e.g. the valley's high plateau). */
+  setCloudBase: (groundY: number) => void;
   update: (
     dt: number,
     weather: WeatherConfig,
@@ -292,5 +294,9 @@ export function createWeatherVisuals(scene: THREE.Scene): WeatherVisuals {
     }
   };
 
-  return { skyMesh, skyMaterial: skyMat, skyUniforms, update };
+  const setCloudBase = (groundY: number) => {
+    cloudGroup.position.y = Math.max(0, groundY);
+  };
+
+  return { skyMesh, skyMaterial: skyMat, skyUniforms, setCloudBase, update };
 }

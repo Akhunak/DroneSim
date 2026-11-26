@@ -1,4 +1,4 @@
-export type SceneId = 'mountain' | 'city';
+export type SceneId = 'mountain' | 'city' | 'valley';
 
 export type FlightMode = 'cine' | 'normal' | 'sport' | 'atti';
 

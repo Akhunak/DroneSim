@@ -18,6 +18,7 @@ export interface MainMenuCallbacks {
 const SCENE_LABELS: Record<SceneId, string> = {
   mountain: '🏔️ Dağlık Arazi',
   city: '🏙️ Şehir İçi',
+  valley: '🏞️ Vadi',
 };
 
 const WEATHER_LABELS: Record<WeatherPreset, string> = {
@@ -148,7 +149,7 @@ export class MainMenu {
             <h1 class="mm-title">UÇUŞ <span>SİMÜLATÖRÜ</span></h1>
           </div>
         </div>
-        <p class="mm-tagline">Gerçekçi 6 eksenli fizik · Dinamik hava · İki uçuş sahnesi</p>
+        <p class="mm-tagline">Gerçekçi 6 eksenli fizik · Dinamik hava · Üç uçuş sahnesi</p>
 
         <nav class="mm-view" id="mm-main-view" aria-label="Ana menü">
           <button type="button" class="mm-item primary" data-action="start">

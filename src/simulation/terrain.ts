@@ -34,6 +34,146 @@ const MOUNTAIN_BUILD_SITES: Array<{ x: number; z: number; flat: number; blend: n
   ...MOUNTAIN_TURBINES.map((t) => ({ x: t.x, z: t.z, flat: 6, blend: 17 })),
 ];
 
+// ---------------------------------------------------------------------------
+// Valley (Vadi) scene: a long, deep limestone gorge in the style of Kaputaş (Antalya).
+// The launch pad sits on the plateau at the rounded head of the gorge; the gorge runs
+// North (-Z) for ~400 m, gently meandering, and opens onto a pebble cove and a turquoise sea.
+// ---------------------------------------------------------------------------
+/** Rounded head of the gorge, just north of the launch pad. */
+const VALLEY_HEAD_Z = -58;
+/** Where the gorge floor reaches the beach. */
+export const VALLEY_MOUTH_Z = -430;
+/** Average shoreline (the cove pushes it slightly inland at the gorge mouth). */
+const VALLEY_COAST_Z = -468;
+const VALLEY_RIM = 46;
+const VALLEY_HEAD_FLOOR = 10;
+const VALLEY_MOUTH_FLOOR = 0.5;
+const VALLEY_SEABED = -16;
+/** Kaputaş-style coast-road bridge spanning the gorge mouth. */
+export const VALLEY_BRIDGE = { z: -404, deckBottom: 22, thickness: 2.2, width: 9 };
+
+/** Flight-area rectangle for the valley (the sea beyond the cove stays flyable). */
+const VALLEY_BOUNDS = { minX: -230, maxX: 230, minZ: -620, maxZ: 120 };
+
+function smoothstep(e0: number, e1: number, x: number): number {
+  const t = Math.max(0, Math.min(1, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
+/** Centre line of the gorge (gentle S-shaped meander, straight at the head). */
+export function valleyAxisX(z: number): number {
+  const t = Math.max(0, VALLEY_HEAD_Z - z);
+  return Math.sin(t * 0.0125) * 24 * Math.min(1, t / 70);
+}
+
+/** Slope of the gorge centre line, dx/dz (for orienting rings and the bridge). */
+function valleyAxisSlope(z: number): number {
+  return (valleyAxisX(z + 0.5) - valleyAxisX(z - 0.5)) / 1;
+}
+
+export interface ValleySample {
+  /** Height of the terrain (before the coastline is applied). */
+  height: number;
+  /** Lateral distance from the gorge centre line (rounded around the head). */
+  dist: number;
+  floorHalf: number;
+  cliffTop: number;
+  /** 0 at the head of the gorge -> 1 at the mouth. */
+  progress: number;
+  floorY: number;
+}
+
+function valleyPlateau(x: number, z: number): number {
+  return (
+    VALLEY_RIM +
+    Math.sin(x * 0.021 + 0.6) * Math.cos(z * 0.017) * 3.2 +
+    Math.sin(x * 0.05) * Math.sin(z * 0.043) * 1.6
+  );
+}
+
+/** Gorge cross-section: gravel floor, scree talus, sheer limestone walls, rounded rim, plateau. */
+export function sampleValley(x: number, z: number): ValleySample {
+  const progress = Math.max(0, Math.min(1, (VALLEY_HEAD_Z - z) / (VALLEY_HEAD_Z - VALLEY_MOUTH_Z)));
+  const dx = x - valleyAxisX(z);
+  const dz = Math.max(0, z - VALLEY_HEAD_Z);
+  let dist = Math.hypot(dx, dz);
+  // Irregular walls: buttresses and small bays along each side
+  dist += Math.sin(z * 0.047 + (dx > 0 ? 1.7 : 0)) * 4.5 + Math.sin(z * 0.13 + x * 0.03) * 2.0;
+  dist = Math.max(0, dist);
+
+  const floorHalf = 15 + 17 * progress;
+  const cliffTop = floorHalf + 26 + 8 * progress;
+  const floorY =
+    VALLEY_HEAD_FLOOR + (VALLEY_MOUTH_FLOOR - VALLEY_HEAD_FLOOR) * progress +
+    Math.sin(z * 0.07) * Math.sin(x * 0.09) * 0.35;
+  const plateau = valleyPlateau(x, z);
+
+  let height: number;
+  if (dist <= floorHalf) {
+    height = floorY + (dist / floorHalf) ** 2 * 2.0;
+  } else if (dist <= cliffTop) {
+    const u = (dist - floorHalf) / (cliffTop - floorHalf);
+    const wall = smoothstep(0.12, 0.92, u);
+    const base = floorY + 2.0;
+    height = base + (plateau - base) * wall;
+    // Horizontal limestone ledges on the mid-wall
+    height += Math.sin(height * 0.9) * 0.6 * wall * (1 - wall) * 4;
+  } else {
+    // Plateau rising gently into hills away from the gorge
+    height = plateau + Math.min(22, Math.max(0, dist - cliffTop - 40) * 0.09);
+  }
+  return { height, dist, floorHalf, cliffTop, progress, floorY };
+}
+
+/** Shoreline z at a given x (more negative = further out to sea). */
+function valleyShoreZ(x: number): number {
+  const coast = VALLEY_COAST_Z + Math.sin(x * 0.017 + 0.8) * 16 + Math.sin(x * 0.043) * 6;
+  const coveX = x - valleyAxisX(VALLEY_MOUTH_Z);
+  const cove = Math.exp(-(coveX * coveX) / (2 * 45 * 45)) * 14;
+  return coast + cove;
+}
+
+function getValleyHeight(x: number, z: number): number {
+  let h = sampleValley(x, z).height;
+
+  // Coastline: land drops into the sea as steep sea cliffs (pebble beach in the cove)
+  const seaward = valleyShoreZ(x) - z;
+  if (seaward > -6) {
+    const k = smoothstep(-6, 40, seaward);
+    h += (VALLEY_SEABED - h) * k;
+  }
+
+  // Flat launch pad on the plateau at the head of the gorge
+  const distHome = Math.hypot(x, z);
+  if (distHome < 15) {
+    const padH = valleyPlateau(0, 0);
+    h = padH + (h - padH) * smoothstep(9, 15, distHome);
+  }
+  return h;
+}
+
+/** RTH climb height above home for each scene (clears the tallest obstacles). */
+export function getRthAltitude(sceneId: SceneId = activeSceneId): number {
+  if (sceneId === 'city') return 102;
+  if (sceneId === 'valley') return 30;
+  return 36;
+}
+
+/** Keeps the drone inside the scene's flight area (soft geofence). */
+export function clampToFlightArea(p: { x: number; z: number }, sceneId: SceneId = activeSceneId): void {
+  if (sceneId === 'valley') {
+    p.x = Math.max(VALLEY_BOUNDS.minX, Math.min(VALLEY_BOUNDS.maxX, p.x));
+    p.z = Math.max(VALLEY_BOUNDS.minZ, Math.min(VALLEY_BOUNDS.maxZ, p.z));
+    return;
+  }
+  const maxRadius = 310;
+  const dist = Math.hypot(p.x, p.z);
+  if (dist > maxRadius) {
+    p.x = (p.x / dist) * maxRadius;
+    p.z = (p.z / dist) * maxRadius;
+  }
+}
+
 export function setActiveScene(sceneId: SceneId): void {
   activeSceneId = sceneId;
 }
@@ -46,8 +186,12 @@ export function getActiveScene(): SceneId {
  * Deterministic terrain heightmap for the active scene.
  * - mountain: Coastal highland valley with flat helipad plateau, lake basin, rolling hills & alpine ridges.
  * - city: Level modern urban ground plane (y = 0) with a scenic waterfront river canal along the East edge.
+ * - valley: Kaputaş-style limestone gorge running North from a cliff-top pad to a turquoise cove.
  */
 export function getTerrainHeight(x: number, z: number, sceneId: SceneId = activeSceneId): number {
+  if (sceneId === 'valley') {
+    return getValleyHeight(x, z);
+  }
   if (sceneId === 'city') {
     // Urban canal running North-South near x = 148
     const canalDist = Math.abs(x - 148);
@@ -122,7 +266,134 @@ export function createWorldObstacles(sceneId: SceneId = activeSceneId): WorldObs
   if (sceneId === 'city') {
     return createCityObstacles();
   }
+  if (sceneId === 'valley') {
+    return createValleyObstacles();
+  }
   return createMountainObstacles();
+}
+
+function createValleyObstacles(): WorldObstacle[] {
+  const obstacles: WorldObstacle[] = [];
+  let seed = 6151;
+  const rand = () => {
+    seed = (seed * 16807) % 2147483647;
+    return (seed - 1) / 2147483646;
+  };
+  const slopeAt = (x: number, z: number) =>
+    Math.hypot(
+      getValleyHeight(x + 1, z) - getValleyHeight(x - 1, z),
+      getValleyHeight(x, z + 1) - getValleyHeight(x, z - 1)
+    ) * 0.5;
+
+  // Coast-road bridge across the gorge mouth: deck spans wall to wall, two slender piers
+  const bz = VALLEY_BRIDGE.z;
+  const bAxis = valleyAxisX(bz);
+  const deckTop = VALLEY_BRIDGE.deckBottom + VALLEY_BRIDGE.thickness;
+  const findWall = (dir: 1 | -1) => {
+    let off = 0;
+    while (off < 160 && getValleyHeight(bAxis + dir * off, bz) < deckTop + 1.5) off += 1;
+    return bAxis + dir * (off + 5);
+  };
+  const leftX = findWall(-1);
+  const rightX = findWall(1);
+  obstacles.push({
+    id: 'valley-bridge',
+    type: 'box',
+    x: (leftX + rightX) / 2,
+    y: VALLEY_BRIDGE.deckBottom,
+    z: bz,
+    width: rightX - leftX,
+    height: VALLEY_BRIDGE.thickness,
+    depth: VALLEY_BRIDGE.width,
+  });
+  for (const side of [-1, 1]) {
+    const px = bAxis + side * 19;
+    const py = getValleyHeight(px, bz);
+    obstacles.push({
+      id: `bridge-pier-${side < 0 ? 'w' : 'e'}`,
+      type: 'cylinder',
+      x: px,
+      y: py,
+      z: bz,
+      width: 3.2,
+      height: VALLEY_BRIDGE.deckBottom - py,
+      depth: 3.2,
+    });
+  }
+
+  // Boulders scattered on the gorge floor
+  for (let i = 0; i < 34; i++) {
+    const z = VALLEY_HEAD_Z - 25 - rand() * (VALLEY_HEAD_Z - VALLEY_MOUTH_Z - 10);
+    const v = sampleValley(valleyAxisX(z), z);
+    const x = valleyAxisX(z) + (rand() * 2 - 1) * v.floorHalf * 0.85;
+    const w = 1.6 + rand() * 2.8;
+    obstacles.push({
+      id: `boulder-${i}`,
+      type: 'cylinder',
+      x,
+      y: getValleyHeight(x, z) - 0.3,
+      z,
+      width: w,
+      height: w * (0.55 + rand() * 0.35),
+      depth: w,
+    });
+  }
+
+  // Beach umbrellas in the cove
+  const shoreAtAxis = valleyShoreZ(valleyAxisX(VALLEY_MOUTH_Z));
+  for (let i = 0; i < 9; i++) {
+    const z = VALLEY_MOUTH_Z - 4 - rand() * (VALLEY_MOUTH_Z - shoreAtAxis - 10);
+    const x = valleyAxisX(z) + (rand() * 2 - 1) * 24;
+    const y = getValleyHeight(x, z);
+    if (y < WATER_LEVEL + 0.6) continue;
+    obstacles.push({ id: `umbrella-${i}`, type: 'cylinder', x, y, z, width: 2.6, height: 2.5, depth: 2.6 });
+  }
+
+  // Pine woods: clusters on the gorge floor and along both rims
+  const clusters: Array<{ x: number; z: number; r: number; n: number }> = [];
+  for (const p of [0.1, 0.22, 0.35, 0.48, 0.61, 0.74, 0.86]) {
+    const z = VALLEY_HEAD_Z - p * (VALLEY_HEAD_Z - VALLEY_MOUTH_Z);
+    const v = sampleValley(valleyAxisX(z), z);
+    const side = rand() < 0.5 ? -1 : 1;
+    clusters.push({ x: valleyAxisX(z) + side * v.floorHalf * (0.2 + rand() * 0.4), z, r: 9 + rand() * 6, n: 10 + Math.floor(rand() * 8) });
+  }
+  for (const p of [-0.15, 0.05, 0.2, 0.38, 0.55, 0.72, 0.9]) {
+    const z = VALLEY_HEAD_Z - p * (VALLEY_HEAD_Z - VALLEY_MOUTH_Z);
+    const v = sampleValley(valleyAxisX(z), z);
+    for (const side of [-1, 1]) {
+      const off = v.cliffTop + 14 + rand() * 55;
+      clusters.push({ x: valleyAxisX(z) + side * off, z: z + (rand() - 0.5) * 30, r: 16 + rand() * 12, n: 14 + Math.floor(rand() * 10) });
+    }
+  }
+
+  let treeIdx = 0;
+  for (const c of clusters) {
+    for (let i = 0; i < c.n; i++) {
+      const a = rand() * Math.PI * 2;
+      const r = Math.sqrt(rand()) * c.r;
+      const tx = c.x + Math.cos(a) * r;
+      const tz = c.z + Math.sin(a) * r;
+      const ty = getValleyHeight(tx, tz);
+      if (ty < WATER_LEVEL + 1.5) continue;
+      if (Math.hypot(tx, tz) < 16) continue; // keep the launch pad clear
+      if (slopeAt(tx, tz) > 0.55) continue; // no trees on the sheer walls
+      const tooClose = obstacles.some((o) => Math.hypot(o.x - tx, o.z - tz) < o.width * 0.5 + 2.2);
+      if (tooClose) continue;
+      const treeH = 6.5 + rand() * 6.5;
+      obstacles.push({
+        id: `tree-v${treeIdx++}`,
+        type: 'cylinder',
+        x: tx,
+        y: ty,
+        z: tz,
+        width: 2.6 + rand() * 1.6,
+        height: treeH,
+        depth: 3,
+      });
+    }
+  }
+
+  return obstacles;
 }
 
 function createMountainObstacles(): WorldObstacle[] {
@@ -357,6 +628,32 @@ export function createCheckpointRings(sceneId: SceneId = activeSceneId): Checkpo
       rotationY: c.rotY,
       cleared: false,
     }));
+  }
+
+  if (sceneId === 'valley') {
+    // Dive off the rim, follow the meandering gorge, thread under the bridge and out to sea
+    const course: Array<{ z: number; y: (floor: number) => number }> = [
+      { z: -78, y: () => 38 },
+      { z: -130, y: (f) => f + 20 },
+      { z: -180, y: (f) => f + 12 },
+      { z: -232, y: (f) => f + 8 },
+      { z: -285, y: (f) => f + 15 },
+      { z: -340, y: (f) => f + 8 },
+      { z: VALLEY_BRIDGE.z, y: (f) => f + 10 },
+      { z: -500, y: () => 12 },
+    ];
+    return course.map((c, idx) => {
+      const x = valleyAxisX(c.z);
+      return {
+        id: idx + 1,
+        x,
+        y: c.y(sampleValley(x, c.z).floorY),
+        z: c.z,
+        radius: 5.4,
+        rotationY: Math.atan(-valleyAxisSlope(c.z)),
+        cleared: false,
+      };
+    });
   }
 
   const coords: Array<{ x: number; z: number; agl: number; rotY: number }> = [
