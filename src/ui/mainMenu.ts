@@ -99,7 +99,6 @@ export class MainMenu {
   private items: HTMLButtonElement[] = [];
   private elMainView!: HTMLElement;
   private elOptionsView!: HTMLElement;
-  private elSceneLabel!: HTMLElement;
   private elStatus: Record<'scene' | 'weather' | 'mode' | 'sound', HTMLElement> = {} as never;
   private elClock!: HTMLElement;
   private elMuteToggle!: HTMLButtonElement;
@@ -156,7 +155,6 @@ export class MainMenu {
             <span class="mm-idx">01</span>
             <span class="mm-text">
               <span class="mm-label">Simülasyonu Başlat</span>
-              <small>Sahne: <b id="mm-scene-label">${SCENE_LABELS.mountain}</b></small>
             </span>
             <span class="mm-arrow">▸</span>
           </button>
@@ -164,7 +162,6 @@ export class MainMenu {
             <span class="mm-idx">02</span>
             <span class="mm-text">
               <span class="mm-label">Sahneler</span>
-              <small>Uçuş yapılacak ortamı seç</small>
             </span>
             <span class="mm-arrow">▸</span>
           </button>
@@ -172,7 +169,6 @@ export class MainMenu {
             <span class="mm-idx">03</span>
             <span class="mm-text">
               <span class="mm-label">Seçenekler</span>
-              <small>Hava durumu, uçuş modu, kamera ve ses</small>
             </span>
             <span class="mm-arrow">▸</span>
           </button>
@@ -200,7 +196,6 @@ export class MainMenu {
           </div>
         </section>
 
-        <div class="mm-hint"><kbd>↑</kbd><kbd>↓</kbd> seç · <kbd>Enter</kbd> onayla · <kbd>Esc</kbd> geri</div>
       </div>
 
       <div class="mm-statusbar">
@@ -216,7 +211,6 @@ export class MainMenu {
     const q = <T extends HTMLElement>(sel: string) => this.root.querySelector<T>(sel)!;
     this.elMainView = q('#mm-main-view');
     this.elOptionsView = q('#mm-options-view');
-    this.elSceneLabel = q('#mm-scene-label');
     this.elClock = q('#mm-clock');
     this.elMuteToggle = q<HTMLButtonElement>('#mm-mute-toggle');
     this.items = Array.from(this.elMainView.querySelectorAll<HTMLButtonElement>('.mm-item'));
@@ -323,7 +317,6 @@ export class MainMenu {
   }
 
   public syncScene(sceneId: SceneId): void {
-    this.elSceneLabel.textContent = SCENE_LABELS[sceneId];
     this.elStatus.scene.textContent = SCENE_LABELS[sceneId].replace(/^\S+\s/, '');
   }
 
